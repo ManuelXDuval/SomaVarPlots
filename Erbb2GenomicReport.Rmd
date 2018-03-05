@@ -1,0 +1,2429 @@
+---
+title: "SUMMIT 'basket' trial biomarker genomic report"
+author: "LE & MD, PUMA Biotech"
+date: "March 03rd, 2018"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: true
+---
+version#: `r Sys.time()`  
+
+#Scopes  
+ 
+**Describes SUMMIT trial ErBb2 somatic variations' enrolment status via lolliplots.**  
+**Reports co-occurrence of somatic variations in oncogenes and tumor suppressor genes with oncoplots.**  
+**Renders change from baseline and PFS via waterfall and swim plots aligned with oncoplots**  
+
+#Data   
+**SUMMIT biomarker log data cut 15-Dec-2017.**   
+
+##Methods  
+-the report is created with the statistical computing and graphics R environment.  
+-the R markdown script referred to as SUMMITBioMarkerGenomicReport.Rmd reads the set of Erbb2 genotype data as well as MSK-IMPACT and non MSK-IMPACT targeted genes' genotypes form the input SUMMITbiomarkerLogDataCut23-Jun-2017.xls excel formatted file.  
+-In addition to general purposes packages like dplyr and DT, the two main specific packages applied by the script are [trackViewer](https://bioconductor.org/packages/release/bioc/html/trackViewer.html) and [ComplexHeatmap](https://bioconductor.org/packages/release/bioc/html/ComplexHeatmap.html): these are used to generate lollipop plots and oncoplots respectively.  Detail information about the packages version are reported at the end of the document.  
+
+##New (03/04/2018)
+-Dec. 15, 2017 data cut;
+-the variantTypeCall function which assign variants type to input variants;   
+##To-Do: 
+-evaluate the checkpoint R package for code maintenance and dependency with packages' version;   
+
+```{r, echo = F, warning = FALSE}
+library(knitr)
+opts_chunk$set(tidy.opts = list(width.cutoff = 80), tidy = TRUE)
+
+#load the libjvm lib
+dyn.load('/Library/Java/JavaVirtualMachines/jdk-9.0.1.jdk/Contents/Home/lib/server/libjvm.dylib')
+```
+
+
+```{r packages, echo = TRUE, results = 'hide', message = FALSE, warning = FALSE}
+#Dependencies.  
+sapply(c("XLConnect", "XLConnectJars", "knitr", "ggplot2", "GenomicRanges", "rtracklayer", "trackViewer", "plyr", "dplyr", "DT", "stringr", "tidyr", "magrittr","ComplexHeatmap", "GetoptLong", "gridExtra", "cowplot", "grid"), library, character.only = TRUE)
+```
+
+
+```{r DataLoad, echo = TRUE, results = 'hide', message = FALSE, warning = FALSE,  tidy = TRUE}
+#Loading data and setting variables.  
+
+#loading worksheet
+SummitBioMarker1215 <- loadWorkbook(paste(getwd(), "/data/SUMMITBiomarkerLogDataCut15-DEC-2017.xlsx", sep =  ""))
+setMissingValue(SummitBioMarker1215, value = c(""))
+
+###~~~~setting some global variables
+
+#the Erbb2Features' GRanges object used to draw lolliplots with the Erbb2 domains.  
+#instantiating the Erbb2Features GenomicRanges object which holds ErBb2 protein domains. 
+Erbb2Features <- GRanges("ERBB2", IRanges(c(1, 652, 675, 720, 1003),  width = c(651, 23, 45, 285, 405), names = c("Extracellular", "TM", "JM", "Kinase", "Tail")))
+Erbb2Features$fill <- c("bisque", "coral2", "darkseagreen1","skyblue", "chartreuse2")
+Erbb2Features$height <- c(0.02, 0.05, 0.035, 0.04, 0.03)
+
+#Oct. 3rd, 2017: adjusting height of the ERBB2 domain in the context of enlarging the lolliplot
+Erbb2Features2 <- Erbb2Features
+Erbb2Features2$height <- c(0.01, 0.025, 0.017, 0.02, 0.015)
+
+#instantiating the Erbb2 kinase domain GenomicRanges object which holds ErBb2 kinase domain only. 
+Erbb2KinaseFeature <- GRanges("ERBB2", IRanges(c(1), width = c(200)), names = c("Kinase"))
+Erbb2KinaseFeature$fill <- c ("skyblue")
+Erbb2KinaseFeature$height <- c(0.05)
+
+#setting the Best Overall Response legend for the lolliplots
+response <- c("ND", "PD", "SD", "PR", "CR")
+response.color.set <- as.list(as.data.frame(rbind(c("gray", "black", "yellow", "green", "red"), "#FFFFFFFF"), stringsAsFactors = FALSE))
+names(response.color.set) <- response
+###~~~~
+
+#function for the oncoplot
+alter_fun = list(
+    background = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.8, "mm"), h-unit(0.1, "mm"), gp = gpar(fill = "#CCCCCC", col = NA))
+    },
+    Missense = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.8, "mm"), h-unit(0.1, "mm"), gp = gpar(fill = "green", col = NA))
+    },
+    DeepDel = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.8, "mm"), h-unit(0.1, "mm"), gp = gpar(fill = "blue", col = NA))
+    },
+    AMP = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.8, "mm"), h-unit(0.1, "mm"), gp = gpar(fill = "red", col = NA))
+    },
+    Promoter = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.8, "mm"), h-unit(0.1, "mm"), gp = gpar(fill = "purple", col = NA))
+    },
+    Nonsense = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.8, "mm"), h-unit(0.1, "mm"), gp = gpar(fill = "black", col = NA))
+    },    
+    MissenseAmp = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.5, "mm"), h*0.33, gp = gpar(fill = "cyan", col = NA))
+    },
+    fusionAmp = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.5, "mm"), h*0.33, gp = gpar(fill = "cadetblue1", col = NA))
+    },
+    splice = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.5, "mm"), h-unit(0.1, "mm"), gp = gpar(fill = "coral3", col = NA))
+    },
+    Gain = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.8, "mm"), h-unit(0.1, "mm"), gp = gpar(fill = "darksalmon", col = NA))
+    }, 
+    rearrangement = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.8, "mm"), h-unit(0.1, "mm"), gp = gpar(fill = "khaki", col = NA))
+    }, 
+    Indel = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.5, "mm"), h-unit(0.1, "mm"), gp = gpar(fill = "darkgreen", col = NA))
+    }
+)
+col = c("Missense" = "green", "AMP" = "red", "Promoter" = "purple", "DeepDel" = "blue", "Nonsense" = "black", "MissenseAmp" = "cyan", "Indel" = "darkgreen", "splice" = "coral3", "Gain" = "darksalmon", "rearrangement" = "khaki", "fusionAmp" = "cadetblue1")
+
+#somatic variations' type assignment function
+variantTypeCall <- function(x){
+  x <- str_replace_all(str_c(trimws(x, which = c("both"))), 
+                c("[[:alnum:]]+\\*[[:alnum:]]*" = "Nonsense;", 
+                  "[[:alnum:]]+_[[:alnum:]]+dup" = "Indel;", 
+                  "AMP|amp" = "AMP;",
+                  "fusionAmp" = "fusionAmp;",
+                  "DeepDel" = "DeepDel;",
+                  "promoter|Promoter" = "Promoter;", 
+                  "splice" = "splice;", 
+                  "deletion" = "Indel;",
+                  "rearrangement" = "rearrangement;",
+                  "[[:alnum:]]+_[[:alnum:]]+ins[[:alnum:]]*" = "Indel;",
+                  "[[:alnum:]]+_[[:alnum:]]del" = "Indel;",
+                  "\\w+\\d+\\w+" = "Missense;",
+                  "gain|GAIN" = "Gain;"))
+}
+```
+
+
+#Biliary  
+##Distributions of ErBb2 somatic variants w.r.t. clinical endpoints.
+```{r biliary, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#reading enrolment data set
+biliaryDataSet <- readWorksheet(SummitBioMarker1215, sheet = "Biliary tract")
+#instantiate a subset dataframe for the lolliplot: loop through each row of the DataSet dataframe until the 1st row where there is no value, indicating the end of input
+biliary <- biliaryDataSet[c(1:min(which(sapply(1:dim(biliaryDataSet)[1], function(i) length(unique(as.character(biliaryDataSet[c(i),]))) < 3) == TRUE)) -1),]
+##
+#tabular views
+kable(t(as.matrix(table(biliary$Mutation.code))), caption = "ErBb2 somatic variants occurences")
+kable(table(biliary$Mutation.code, biliary$Primary.Cell.Type), caption = "ErbB2 mutation by Primary Cell Type")
+kable(table(biliary$Mutation.code, biliary$Objective.Response.at.Week.8), caption = "ErbB2 mutation by Objective Response at Week 8")
+
+#~Best overall response
+#replace missing value by ND (Not Determined)
+biliary$Best.Overall.Response[is.na(biliary$Best.Overall.Response)] <- "ND"
+#keep first 2 characters for the Best.Overall.Response's attribute value
+biliary$Best.Overall.Response <- as.factor(str_sub(biliary$Best.Overall.Response, 1, 2))
+#setting values to the Best.Overall.Response attribute
+biliary$Best.Overall.Response <- factor(biliary$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "ND"), ordered = TRUE)
+#reporting it via a table
+BestOverallResPerVar <-  as.data.frame.matrix(table(biliary$Mutation.code, biliary$Best.Overall.Response))
+datatable(BestOverallResPerVar, caption = "ErbB2 mutation by Best Overall Response")
+
+ClinicalBenefitPerVar <- as.data.frame.matrix(table(biliary$Mutation.code, biliary$Clinical.Benefit))
+datatable(ClinicalBenefitPerVar, caption = "ErbB2 mutations by Clinical Benefit Status")
+
+#biliary$Clinical.Benefit <- revalue(biliary$Clinical.Benefit, c("pending" = "NA"))
+```
+<hr /> 
+
+##Lolliplot: ErBb2 somatic variants annotated with Best Overall Response values  
+```{r biliarySNV, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#adding one variable, i.e. the somatic variant coordinate w.r.t. ErbB2 aa sequence
+biliary$ErBb2SomaticVarCoord <- as.numeric(str_extract(biliary$Mutation.code, "\\d+"))
+#adding two additional variables: the wild type aa and the substituted aa
+biliary$ErBb2WildTypeAA <- str_sub(biliary$Mutation.code, 1, 1)
+biliary$ErBb2SubsAA <- gsub("^\\w{1}\\d+", "", biliary$Mutation.code, perl = TRUE)
+
+#reordering the dataframe according to the aa coordinate
+biliary <- biliary[order(biliary$ErBb2SomaticVarCoord),]
+
+biliaryDf1 <- data.frame(biliary$ErBb2SomaticVarCoord, paste0(biliary$ErBb2WildTypeAA, biliary$ErBb2SomaticVarCoord), biliary$ErBb2SubsAA, biliary$Best.Overall.Response)
+#the biliaryDf1 df Erbb2Features 4 columns, the coordinates where the variations map, the WT aa with the coordinate, the variant AA and the clinical response.
+colnames(biliaryDf1) <- c("coord", "WTaaCoord", "Var", "Response")
+#creating a 2nd df in order to concatenate the substituions mapping to the same coordinate
+biliaryDf2 <- as.data.frame(unique(biliaryDf1[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+biliaryDf2$SNV <- paste0(biliaryDf2$WTaaCoord, biliaryDf2$Varalleles)
+#adding it to the initial biliaryDf1 df
+biliaryDf1 <- merge(biliaryDf1, biliaryDf2[,-c(2,3)], by = "WTaaCoord")
+#adding one attribute: concatenation of the clinical response and the variant
+biliaryDf1$VarRes <- paste0(biliaryDf1$Response, biliaryDf1$SNV)
+
+# set order for clinical response value to bottom CR, PR, SD, PD, ND
+biliaryDf1$Response <- str_replace_all(str_c(biliaryDf1$Response), c(CR = "E-CR", PR = "D-PR", SD = "C-SD", PD = "B-PD", ND = "A-ND"))
+# order the df
+biliaryDf1 <- biliaryDf1[order(biliaryDf1$coord, biliaryDf1$Response), ]
+
+## 
+biliaryDf3 <- biliaryDf1
+## 
+
+biliaryDf1 <- unique(ddply(biliaryDf1[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+biliaryDf1 <- biliaryDf1[order(biliaryDf1$coord, biliaryDf1$VarRes),]
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+biliary.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(biliaryDf1)[1], function(i) rep(biliaryDf1$coord[i], biliaryDf1$score[i]))), width = 1, names = unlist(sapply(1:dim(biliaryDf1)[1], function(i) rep(biliaryDf1$SNV[i], biliaryDf1$score[i])))))
+
+#adding the stack.factor attribute
+biliary.gr$stack.factor <- unlist(sapply(1:dim(biliaryDf1)[1], function(i) paste0(biliaryDf1$Response[i], "_", seq(1:biliaryDf1$score[i]))))
+biliary.gr$value1 <- 100
+biliary.gr$value2 <- 100 - biliary.gr$value1
+
+biliary.gr$color <- response.color.set[gsub("_\\d*|\\w*-", "", biliary.gr$stack.factor)]
+legend <- list(labels = response, col = "gray80", fill = sapply(response.color.set, `[`, 1))
+
+#editing the gr object's stack.factor variable
+biliaryDf3 <- ddply(biliaryDf3, .(WTaaCoord), mutate, idx = seq_along(coord))
+biliaryDf3 <- biliaryDf3[order(biliaryDf3$coord, biliaryDf3$Response),]
+
+biliaryDf3$idx <- str_replace_all(str_c(biliaryDf3$idx), c(`1` = "A", `2` = "B", `3` = "C", `4` = "D", `5` = "E", `6` = "F"))
+biliary.gr$stack.factor <- as.character(biliaryDf3$idx)
+
+#plotting
+lolliplot(biliary.gr, Erbb2Features, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .7)
+```
+
+
+##Oncoplot: co-occurrence of somatic variations (both IMPACT and NON-IMPACT data sets) 
+```{r BiliaryOncoplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 7, fig.height = 6.2}
+#co-occurring somatic variants dataframe instantiation
+biliarySomatics <- biliaryDataSet[c(match(c("Subject Identifier for the Study"), biliaryDataSet[,1]):dim(biliaryDataSet)[1]),]
+colnames(biliarySomatics) <- biliarySomatics[1,]
+biliarySomatics <- biliarySomatics[-c(1), c(2:7)]
+##biliarySomatics <- biliarySomatics[,colSums(is.na(biliarySomatics)) < nrow(biliarySomatics)]
+
+#Nov3: replacing the cfIMPACT string of the PUMA_ID column by NA
+biliarySomatics[biliarySomatics == "cfIMPACT"] <- NA
+#Nov3: filling out blank cells.
+biliarySomatics  <- biliarySomatics  %>% fill(PUMA_ID, Gene)
+biliarySomatics$Subject.Identifier.for.the.Study <- gsub("\\d+-\\d+\\-", "", biliarySomatics$PUMA_ID)
+#IMPACT data
+biliarySomaticsImpact <- biliarySomatics[(biliarySomatics$Gene != "not done"),]
+#subsetting
+biliarySomaticsImpact <- biliarySomaticsImpact[,c(7,2,3)]
+#filtering out duplication rows
+biliarySomaticsImpact <- unique(biliarySomaticsImpact)
+
+#filtering it out rows where missing values
+biliarySomaticsImpact <- na.omit(biliarySomaticsImpact)
+
+#assigning variants to their respective type
+biliarySomaticsImpact$Alteration <- variantTypeCall(biliarySomaticsImpact$Alteration)
+
+#concatenate variations' types whenever occuring in a given gene for a given subject
+biliarySomaticsImpact <- biliarySomaticsImpact %>% group_by(Subject.Identifier.for.the.Study, Gene) %>% do(Alteration = paste(.$Alteration, collapse = '')) %>% ungroup() %>% mutate(Alteration = unlist(Alteration))
+mat <- as.data.frame(spread(biliarySomaticsImpact, Subject.Identifier.for.the.Study, Alteration))
+row.names(mat) <- mat$Gene
+mat <- mat[,-1]
+
+#Non IMPACT data
+biliarySomaticsNonImpact <- biliarySomatics[(biliarySomatics$Gene == "not done"),]
+biliarySomaticsNonImpact <- biliarySomaticsNonImpact[,c(7,5,6)]
+biliarySomaticsNonImpact <- unique(biliarySomaticsNonImpact)
+biliarySomaticsNonImpact$Subject.Identifier.for.the.Study <- as.character(paste(biliarySomaticsNonImpact$Subject.Identifier.for.the.Study, "*", sep = ""))
+biliarySomaticsNonImpact <- na.omit(biliarySomaticsNonImpact)
+
+#assigning variants to their respective type
+biliarySomaticsNonImpact$Alteration.1  <- variantTypeCall(biliarySomaticsNonImpact$Alteration.1)
+
+biliarySomaticsNonImpact <- biliarySomaticsNonImpact %>% group_by(Subject.Identifier.for.the.Study, Gene.1) %>% do(Alteration.1 = paste(.$Alteration.1, collapse = '')) %>% ungroup() %>% mutate(Alteration.1 = unlist(Alteration.1))
+
+#creating the mutations matrix for oncoprint
+mat2 <- as.data.frame(spread(biliarySomaticsNonImpact, Subject.Identifier.for.the.Study, Alteration.1))
+mat2 <- subset(mat2, select = colnames(mat2) != "NA*")
+row.names(mat2) <- mat2$Gene.1
+mat2 <- mat2[,-1]
+
+mat <- merge(mat, mat2, by = "row.names", all = T)
+row.names(mat) <- mat$Row.names
+mat <- mat[,-1]
+
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), column_title = "Oncoplot for biliary tumor", heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE)
+```
+
+##Waterfall and swim plots with oncoplot
+```{r BiliaryWF, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.align='left', fig.height = 4, fig.width = 5.3}
+#Waterfalls
+biliaryWF <- biliary[,c(1, 12, 13, 17)]
+
+#selecting records for which there are IMPACT and Non-IMPACT genotype data
+biliaryWF <- biliaryWF[(biliaryWF$Subject.Identifier.for.the.Study %in% intersect(biliaryWF$Subject.Identifier.for.the.Study, gsub("\\*", "", colnames(mat)))),]
+
+biliaryWF1 <- biliaryWF[complete.cases(biliaryWF$Percentage.Change.of.Tumor.Measurement),]
+
+#biliaryWF <- biliaryWF[order(-biliaryWF$Percentage.Change.of.Tumor.Measurement),]
+
+biliaryWF1$Percentage.Change.of.Tumor.Measurement <- as.numeric(as.character(biliaryWF1$Percentage.Change.of.Tumor.Measurement))
+
+biliaryWF1$Progression.Free.Survival.Time..Months. <- as.numeric(as.character(biliaryWF1$Progression.Free.Survival.Time..Months.))
+
+biliaryWF1 <- biliaryWF1[order(-biliaryWF1$Percentage.Change.of.Tumor.Measurement),]
+
+biliaryWF1$Subject.Identifier.for.the.Study <- as.character(biliaryWF1$Subject.Identifier.for.the.Study)
+
+biliaryWF2 <- rbind(biliaryWF1, biliaryWF[is.na(biliaryWF$Percentage.Change.of.Tumor.Measurement),])
+biliaryWF2$Percentage.Change.of.Tumor.Measurement <- as.numeric(as.character(biliaryWF2$Percentage.Change.of.Tumor.Measurement))
+
+biliaryWF2$Subject.Identifier.for.the.Study <- as.character(biliaryWF2$Subject.Identifier.for.the.Study)
+
+###
+#response <- c("ND", "PD", "SD", "PR", "CR")
+#response.color.set <- as.list(as.data.frame(rbind(c("gray", "black", "yellow", "green", "red"), "#FFFFFFFF"), stringsAsFactors = FALSE))
+
+###
+
+##g1 <- ggplot(biliaryWF2, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-100, 100) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 5), legend.title = element_text(size = 7), legend.position = "top", plot.margin = unit(c(0,0,0,1.6), "cm"))
+
+##g2 <- ggplot(biliaryWF2, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = biliaryWF2$Best.Overall.Response)) + geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(), axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6)) + guides(fill=FALSE) 
+
+g1 <- ggplot(biliaryWF2, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-100, 100) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 5), legend.title = element_text(size = 7), legend.position = "top", plot.margin = unit(c(0,0,0,1.6), "cm")) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+g2 <- ggplot(biliaryWF2, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = Best.Overall.Response)) + geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(), axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6)) + guides(fill=FALSE) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F) 
+
+plot_grid(g1, g2, nrow = 2, align = "v")
+```
+
+```{r BiliarylOncoplot2, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width= 6.9, fig.height = 6.0, fig.align = 'center'}
+biliaryWF2 <- biliaryWF2[order(-biliaryWF2$Percentage.Change.of.Tumor.Measurement, biliaryWF2$Subject.Identifier.for.the.Study),]
+
+d1 <- setdiff(gsub("\\*", "", colnames(mat)), biliaryWF2$Subject.Identifier.for.the.Study)
+d1 <- sapply(d1, function(x) paste("^",x, "$", sep = ""))
+mat2 <- mat[, !colnames(mat) %in% grep(paste(d1, collapse = "|"), colnames(mat), value = T)]
+#creating a df for the purpose of reordering the mat object passed to the Oncoprint function
+df1 <- biliaryWF2[,c(1,4)]
+df2<- as.data.frame(colnames(mat2))
+colnames(df2) <- "subjid"
+df2$Subject.Identifier.for.the.Study <- gsub("\\*", "", df2$subjid)
+df3 <- merge(df1, df2, by = "Subject.Identifier.for.the.Study", sort = F)
+
+mat2 <- mat2[,c(as.character(df3$subjid))]
+mat2 <- mat2[rowSums(is.na(mat2)) < dim(mat2)[2],]
+
+oncoPrint(mat2, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), heatmap_legend_param = list(title = "Alterations",at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE, column_order = NULL)
+```
+
+<hr />
+<hr />  
+#Bladder  
+##Distributions of ErBb2 somatic variants w.r.t. clinical endpoints.
+```{r bladderDf, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#reading bladder enrolment data set
+bladderDataSet <- readWorksheet(SummitBioMarker1215, sheet = "Bladder")
+
+#instantiate a subset dataframe for the lolliplot: loop through each row of the DataSet dataframe until the 1st row where there is no value, indicating the end of input
+bladder <- bladderDataSet[c(1:min(which(sapply(1:dim(biliaryDataSet)[1], function(i) length(unique(as.character(bladderDataSet[c(i),]))) < 3) == TRUE)) -1),]
+
+#tabular views
+kable(t(as.matrix(table(bladder$Mutation.code))), caption = "ErBb2 somatic variants occurences")
+kable(table(bladder$Mutation.code, bladder$Primary.Cell.Type), caption = "ErbB2 mutation by Primary Cell Type")
+kable(table(bladder$Mutation.code, bladder$Objective.Response.at.Week.8), caption = "ErbB2 mutation by Objective Response at Week 8")
+
+#~Best overall response
+#replace missing value by ND (Not Determined)
+bladder$Best.Overall.Response[is.na(bladder$Best.Overall.Response)] <- "ND"
+#keep first 2 characters for the Best.Overall.Response's attribute value
+bladder$Best.Overall.Response <- as.factor(str_sub(bladder$Best.Overall.Response, 1, 2))
+#setting values to the Best.Overall.Response attribute
+bladder$Best.Overall.Response <- factor(bladder$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "ND"), ordered = TRUE)
+BestOverallResPerVar <-  as.data.frame.matrix(table(bladder$Mutation.code, bladder$Best.Overall.Response))
+
+datatable(BestOverallResPerVar, caption = "ErbB2 mutation by Best Overall Response")
+
+ClinicalBenefitPerVar <- as.data.frame.matrix(table(bladder$Mutation.code, bladder$Clinical.Benefit))
+datatable(ClinicalBenefitPerVar, caption = "ErbB2 mutations by Clinical Benefit Status")
+
+bladder$Clinical.Benefit <- revalue(bladder$Clinical.Benefit, c("pending"="N/A"))
+
+bladder$Clinical.Benefit <- factor(bladder$Clinical.Benefit, levels = c("YES", "NO", "N/A"), ordered = TRUE)
+
+```
+<hr /> 
+##Lolliplot: Annotated ErBb2 somatic variants
+```{r bladderLolliplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+# adding one variable, i.e. the somatic variant coordinate w.r.t. ErbB2 aa
+# sequence
+bladder$ErBb2SomaticVarCoord <- as.numeric(str_extract(bladder$Mutation.code, "\\d+"))
+# adding two additional variables: the wild type aa and the substituted aa
+bladder$ErBb2WildTypeAA <- str_sub(bladder$Mutation.code, 1, 1)
+bladder$ErBb2SubsAA <- gsub("^\\w{1}\\d+", "", bladder$Mutation.code, perl = T)
+
+# reordering the dataframe according to the aa coordinate
+bladder <- bladder[order(bladder$ErBb2SomaticVarCoord), ]
+
+#creating the data structure for the GRanges() GenomicRanges package function
+bladderDf1 <- data.frame(bladder$ErBb2SomaticVarCoord, paste0(bladder$ErBb2WildTypeAA, bladder$ErBb2SomaticVarCoord), bladder$ErBb2SubsAA, bladder$Best.Overall.Response)
+
+#the bladderDf1 df Erbb2Features 4 columns, the coordinates where the variations map, the WT aa with the coordinate, the variant AA and the clinical response.
+colnames(bladderDf1) <- c("coord", "WTaaCoord", "Var", "Response")
+
+#creating a 2nd df in order to concatenate the substitutions mapping to the same coordinate
+bladderDf2 <- as.data.frame(unique(bladderDf1[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+bladderDf2$SNV <- paste0(bladderDf2$WTaaCoord, bladderDf2$Varalleles)
+
+#adding it to the initial bladderDf1 df
+bladderDf1 <- merge(bladderDf1, bladderDf2[,-c(2,3)], by = "WTaaCoord")
+
+#adding one attribute: concatenation of the clinical response and the variant
+bladderDf1$VarRes <- paste0(bladderDf1$Response, bladderDf1$SNV)
+
+#set order for clinical response value to bottom CR, PR, SD, PD, ND
+bladderDf1$Response <- str_replace_all(str_c(bladderDf1$Response), c("CR" = "E-CR", "PR" = "D-PR", "SD" = "C-SD", "PD" = "B-PD", "ND" = "A-ND"))
+#order the df
+bladderDf1 <- bladderDf1[order(bladderDf1$coord, bladderDf1$Response),]
+
+##
+bladderDf3 <- bladderDf1
+##
+
+bladderDf1 <- unique(ddply(bladderDf1[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+bladderDf1 <- bladderDf1[order(bladderDf1$coord, bladderDf1$Response),]
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+bladder.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(bladderDf1)[1], function(i) rep(bladderDf1$coord[i], bladderDf1$score[i]))), width = 1, names = unlist(sapply(1:dim(bladderDf1)[1], function(i) rep(bladderDf1$SNV[i], bladderDf1$score[i])))))
+
+#adding the stack.factor attribute
+bladder.gr$stack.factor <- unlist(sapply(1:dim(bladderDf1)[1], function(i) paste0(bladderDf1$Response[i], "_", seq(1:bladderDf1$score[i]))))
+bladder.gr$value1 <- 100
+bladder.gr$value2 <- 100 - bladder.gr$value1
+
+bladder.gr$color <- response.color.set[gsub("_\\d*|\\w*-", "", bladder.gr$stack.factor)]
+legend <- list(labels = response, col = "gray80", fill = sapply(response.color.set, `[`, 1))
+
+bladderDf3 <- ddply(bladderDf3, .(WTaaCoord), mutate, idx = seq_along(coord))
+bladderDf3 <- bladderDf3[order(bladderDf3$coord, bladderDf3$Response),]
+bladderDf3$idx <- str_replace_all(str_c(bladderDf3$idx), c("10" = "J", "11" = "K", "1" = "A", "2" = "B", "3" = "C", "4" = "D", "5" = "E", "6" = "F", "7" = "G", "8" = "H", "9" = "I"))
+bladder.gr$stack.factor <- as.character(bladderDf3$idx)
+
+#plotting
+lolliplot(bladder.gr, Erbb2Features, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .7)
+```
+  
+##Oncoplot: co-occurrence of somatic variations (both IMPACT and NON-IMPACT data sets) 
+```{r bladderOncoplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 7.1, fig.height = 10.4}
+#co-occurring somatic variants dataframe instantiation
+bladderSomatics <- bladderDataSet[c(match(c("Subject Identifier for the Study"), bladderDataSet[,1]):dim(bladderDataSet)[1]),]
+colnames(bladderSomatics) <- bladderSomatics[1,]
+bladderSomatics <- bladderSomatics[-c(1), c(2:7)]
+
+#Nov3: replacing the cfIMPACT string of the PUMA_ID column by NA
+bladderSomatics[bladderSomatics == "cfIMPACT"] <- NA
+#Nov3: filling out blank cells.
+bladderSomatics  <- bladderSomatics  %>% fill(PUMA_ID, Gene)
+bladderSomatics$Subject.Identifier.for.the.Study <- gsub("\\d+-\\d+\\-", "", bladderSomatics$PUMA_ID)
+#IMPACT data
+bladderSomaticsImpact <- bladderSomatics[(bladderSomatics$Gene != "not done"),]
+#subsetting
+bladderSomaticsImpact <- bladderSomaticsImpact[,c(7,2,3)]
+#filtering out duplication rows
+bladderSomaticsImpact <- unique(bladderSomaticsImpact)
+
+#filtering it out rows where missing values
+bladderSomaticsImpact <- na.omit(bladderSomaticsImpact)
+
+#assigning variants to their respective type
+bladderSomaticsImpact$Alteration <- variantTypeCall(bladderSomaticsImpact$Alteration)
+
+#concatenate variations' types whenever occuring in a given gene for a given subject
+bladderSomaticsImpact <- bladderSomaticsImpact %>% group_by(Subject.Identifier.for.the.Study, Gene) %>% do(Alteration = paste(.$Alteration, collapse = '')) %>% ungroup() %>% mutate(Alteration = unlist(Alteration))
+mat <- as.data.frame(spread(bladderSomaticsImpact, Subject.Identifier.for.the.Study, Alteration))
+row.names(mat) <- mat$Gene
+mat <- mat[,-1]
+
+#Non IMPACT data
+bladderSomaticsNonImpact <- bladderSomatics[(bladderSomatics$Gene == "not done"),]
+bladderSomaticsNonImpact <- bladderSomaticsNonImpact[,c(7,5,6)]
+bladderSomaticsNonImpact <- unique(bladderSomaticsNonImpact)
+bladderSomaticsNonImpact$Subject.Identifier.for.the.Study <- as.character(paste(bladderSomaticsNonImpact$Subject.Identifier.for.the.Study, "*", sep = ""))
+bladderSomaticsNonImpact <- na.omit(bladderSomaticsNonImpact)
+
+#assigning variants to their respective type
+bladderSomaticsNonImpact$Alteration.1 <- variantTypeCall(bladderSomaticsNonImpact$Alteration.1)
+
+bladderSomaticsNonImpact <- bladderSomaticsNonImpact %>% group_by(Subject.Identifier.for.the.Study, Gene.1) %>% do(Alteration.1 = paste(.$Alteration.1, collapse = '')) %>% ungroup() %>% mutate(Alteration.1 = unlist(Alteration.1))
+
+#creating the mutations matrix for oncoprint
+mat2 <- as.data.frame(spread(bladderSomaticsNonImpact, Subject.Identifier.for.the.Study, Alteration.1))
+mat2 <- subset(mat2, select = colnames(mat2) != "NA*")
+row.names(mat2) <- mat2$Gene.1
+mat2 <- mat2[,-1]
+
+mat <- merge(mat, mat2, by = "row.names", all = T)
+row.names(mat) <- mat$Row.names
+mat <- mat[,-1]
+
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 5), pct_gp = gpar(fontsize = 6), column_title = "Oncoplot for bladder tumor", heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE)
+```
+
+##Waterfall and swim plots with oncoplot
+```{r bladderWF, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.align='left', fig.height= 4, fig.width= 4.9}
+#Waterfalls
+bladderWF <- bladder[,c(1, 12, 13, 17)]
+
+#selecting records for which there are IMPACT genotype data
+bladderWF <- bladderWF[(bladderWF$Subject.Identifier.for.the.Study %in% intersect(bladderWF$Subject.Identifier.for.the.Study, gsub("\\*", "", colnames(mat)))),]
+
+#bladderWF <- bladderWF[complete.cases(bladderWF$Percentage.Change.of.Tumor.Measurement),]
+bladderWF <- bladderWF[order(-bladderWF$Percentage.Change.of.Tumor.Measurement),]
+
+bladderWF$Subject.Identifier.for.the.Study <- as.character(bladderWF$Subject.Identifier.for.the.Study)
+
+bladderWF$Best.Overall.Response <- factor(bladderWF$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "NA"))
+
+g1 <- ggplot(bladderWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-100, 100) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 5), legend.title = element_text(size = 7), legend.position = "top", plot.margin = unit(c(0,0,0,1.6), "cm")) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+#+ scale_y_continuous(position = "right")
+
+g2 <- ggplot(bladderWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = Best.Overall.Response)) + 
+    geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(), axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6)) + guides(fill=FALSE) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+plot_grid(g1, g2, nrow = 2, align = "v")
+```
+
+```{r bladderlOncoplot2, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 6.8, fig.height = 10, fig.align = 'center'}
+#given the occurrences of missing data for the %change of tumor measurement variable, subset out the mat matrix for the Subject.Identifier where such missing data.
+##d1 <- setdiff(gsub("\\*", "", colnames(mat)), bladderWF$Subject.Identifier.for.the.Study)
+##mat2 <- mat[, !colnames(mat) %in% grep(paste(d1, collapse = "|"), colnames(mat), value = T)]
+#creating a df for the purpose of reordering the mat object passed to the Oncoprint function
+df1 <- bladderWF[,c(1,4)]
+df2<- as.data.frame(colnames(mat))
+colnames(df2) <- "subjid"
+df2$Subject.Identifier.for.the.Study <- gsub("\\*", "", df2$subjid)
+df3 <- merge(df1, df2, by = "Subject.Identifier.for.the.Study", sort = F)
+
+mat <- mat[c(as.character(df3$subjid))]
+mat <- mat[rowSums(is.na(mat2)) < dim(mat2)[2],]
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 5), pct_gp = gpar(fontsize = 6), heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE, column_order = NULL)
+```
+
+<hr />
+<hr />
+#Breast mono 
+##Distributions of ErBb2 somatic variants w.r.t. clinical endpoints.
+```{r breast_mono, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#reading Breast mono enrolment data set
+Breast_monoDataSet <- readWorksheet(SummitBioMarker1215, sheet = "Breast mono")
+#instantiate a subset dataframe for the lolliplot: loop through each row of the DataSet dataframe until the 1st row where there is no value, indicating the end of input
+Breast_mono <- Breast_monoDataSet[c(1:min(which(sapply(1:dim(Breast_monoDataSet)[1], function(i) length(unique(as.character(Breast_monoDataSet[c(i),]))) < 3) == TRUE)) -1),]
+
+#tabular views
+kable(t(as.matrix(table(Breast_mono$Mutation.code))), caption = "ErBb2 somatic variants occurences")
+kable(table(Breast_mono$Mutation.code, Breast_mono$Primary.Cell.Type), caption = "ErbB2 mutation by Primary Cell Type")
+kable(table(Breast_mono$Mutation.code, Breast_mono$Objective.Response.at.Week.8), caption = "ErbB2 mutation by Objective Response at Week 8")
+
+#~Best overall response
+#replace missing value by ND (Not Determined)
+Breast_mono$Best.Overall.Response[is.na(Breast_mono$Best.Overall.Response)] <- "ND"
+#keep first 2 characters for the Best.Overall.Response's attribute value
+Breast_mono$Best.Overall.Response <- as.factor(str_sub(Breast_mono$Best.Overall.Response, 1, 2))
+#setting values to the Best.Overall.Response attribute
+Breast_mono$Best.Overall.Response <- factor(Breast_mono$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "ND"), ordered = TRUE)
+BestOverallResPerVar <-  as.data.frame.matrix(table(Breast_mono$Mutation.code, Breast_mono$Best.Overall.Response))
+#kable(table(Breast_mono$Mutation.code, Breast_mono$Best.Overall.Response), caption = "ErbB2 mutation by Best Overall Response")
+datatable(BestOverallResPerVar, caption = "ErbB2 mutation by Best Overall Response")
+
+ClinicalBenefitPerVar <- as.data.frame.matrix(table(Breast_mono$Mutation.code, Breast_mono$Clinical.Benefit))
+datatable(ClinicalBenefitPerVar, caption = "ErbB2 mutations by Clinical Benefit Status")
+
+#Breast_mono$Clinical.Benefit <- revalue(Breast_mono$Clinical.Benefit, c("pending"="N/A"))
+```
+<hr /> 
+<hr /> 
+
+##Lolliplot: ErBb2 somatic variants annotated with Best Overall Response values  
+```{r Breast_monoSNV, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.height = 10, fig.width = 10}
+#adding one variable, i.e. the somatic variant coordinate w.r.t. ErbB2 aa sequence
+Breast_mono$ErBb2SomaticVarCoord <- as.numeric(str_extract(Breast_mono$Mutation.code, "\\d+"))
+#adding two additional variables: the wild type aa and the substituted aa
+Breast_mono$ErBb2WildTypeAA <- str_sub(Breast_mono$Mutation.code, 1, 1)
+Breast_mono$ErBb2SubsAA <- gsub("^\\w{1}\\d+", "", Breast_mono$Mutation.code, perl = TRUE)
+
+#reordering the dataframe according to the aa coordinate
+Breast_mono <- Breast_mono[order(Breast_mono$ErBb2SomaticVarCoord),]
+
+#setting the L755_E757delinsS variant to a neighbor coordinate for lolliplot rendering
+Breast_mono[13, 19] <- 754
+#for Subject.Identifier.for.the.Study #1489 with 2 variants, set the 2nd one to neighbor coordinate for lolliplot rendering
+Breast_mono[28, 19] <- 779
+
+#creating the data structure for the GRanges() GenomicRanges package function
+Breast_monoDf1 <- data.frame(Breast_mono$ErBb2SomaticVarCoord, paste0(Breast_mono$ErBb2WildTypeAA, Breast_mono$ErBb2SomaticVarCoord), Breast_mono$ErBb2SubsAA, Breast_mono$Best.Overall.Response)
+#the Breast_monoDf1 df Erbb2Features 4 columns, the coordinates where the variations map, the WT aa with the coordinate, the variant AA and the clinical response.
+colnames(Breast_monoDf1) <- c("coord", "WTaaCoord", "Var", "Response")
+#creating a 2nd df in order to concatenate the substituions mapping to the same coordinate
+Breast_monoDf2 <- as.data.frame(unique(Breast_monoDf1[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+Breast_monoDf2$SNV <- paste0(Breast_monoDf2$WTaaCoord, Breast_monoDf2$Varalleles)
+#adding it fo the initial Breast_monoDf1 df
+Breast_monoDf1 <- merge(Breast_monoDf1, Breast_monoDf2[,-c(2,3)], by = "WTaaCoord")
+#adding one attribute: concatenation of the clinical response and the variant
+Breast_monoDf1$VarRes <- paste0(Breast_monoDf1$Response, Breast_monoDf1$SNV)
+
+#set order for clinical response value to bottom CR, PR, SD, PD, ND
+Breast_monoDf1$Response <- str_replace_all(str_c(Breast_monoDf1$Response), c("CR" = "E-CR", "PR" = "D-PR", "SD" = "C-SD", "PD" = "B-PD", "ND" = "A-ND"))
+#order the df
+Breast_monoDf1 <- Breast_monoDf1[order(Breast_monoDf1$coord, Breast_monoDf1$Response),]
+
+#duplicated the Breast_monoDf1 Df object for later plotting on the kinase domain 
+Breast_monoDf1_2 <- Breast_monoDf1
+##
+Breast_monoDf3 <- Breast_monoDf1
+##
+Breast_monoDf1 <- unique(ddply(Breast_monoDf1[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+Breast_monoDf1 <- Breast_monoDf1[order(Breast_monoDf1$coord, Breast_monoDf1$Response),]
+
+#refer to line 497 and 499 respctively
+Breast_monoDf1[4, 4] <- "L755_E757delinsS"
+Breast_monoDf1[21, 4] <- "V777L and D769Y"
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+Breast_mono.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(Breast_monoDf1)[1], function(i) rep(Breast_monoDf1$coord[i], Breast_monoDf1$score[i]))), width = 1, names = unlist(sapply(1:dim(Breast_monoDf1)[1], function(i) rep(Breast_monoDf1$SNV[i], Breast_monoDf1$score[i])))))
+
+#adding the stack.factor attribute
+Breast_mono.gr$stack.factor <- unlist(sapply(1:dim(Breast_monoDf1)[1], function(i) paste0(Breast_monoDf1$Response[i], "_", seq(1:Breast_monoDf1$score[i]))))
+Breast_mono.gr$value1 <- 100
+Breast_mono.gr$value2 <- 100 - Breast_mono.gr$value1
+
+Breast_mono.gr$color <- response.color.set[gsub("_\\d*|\\w*-", "", Breast_mono.gr$stack.factor)]
+legend <- list(labels = response, col = "gray80", fill = sapply(response.color.set, `[`, 1))
+
+Breast_monoDf3 <- ddply(Breast_monoDf3, .(WTaaCoord), mutate, idx = seq_along(coord))
+Breast_monoDf3 <- Breast_monoDf3[order(Breast_monoDf3$coord, Breast_monoDf3$Response),]
+Breast_monoDf3$idx <- str_replace_all(str_c(Breast_monoDf3$idx), c("10" = "J", "1" = "A", "2" = "B", "3" = "C", "4" = "D", "5" = "E", "6" = "F", "7" = "G", "8" = "H", "9" = "I"))
+Breast_mono.gr$stack.factor <- as.character(Breast_monoDf3$idx)
+
+Breast_monoDf3$SNPsideID <- c(rep("top",3), rep("bottom", 1), rep("top", 10), rep("bottom", 3), rep("top", 4), rep("bottom", 1), rep("top", 5), rep("bottom", 2), rep("top", 1), rep("bottom", 1), rep("top", 1), rep("bottom", 1), rep("top", 1))
+
+Breast_mono.gr$SNPsideID <- Breast_monoDf3$SNPsideID
+
+#plotting
+lolliplot(Breast_mono.gr, Erbb2Features2, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .7)
+```
+
+##Oncoplot: co-occurrence of somatic variations (both IMPACT and NON-IMPACT data sets) 
+```{r Breast_monoOncoplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 7.2, fig.height = 10.3}
+#co-occurring somatic variants dataframe instantiation
+Breast_monoSomatics <- Breast_monoDataSet[c(match(c("Subject Identifier for the Study"), Breast_monoDataSet[,1]):dim(Breast_monoDataSet)[1]),]
+colnames(Breast_monoSomatics) <- Breast_monoSomatics[1,]
+Breast_monoSomatics <- Breast_monoSomatics[-c(1), c(2:7)]
+
+#Nov3: replacing the cfIMPACT string of the PUMA_ID column by NA
+Breast_monoSomatics[Breast_monoSomatics == "cfIMPACT"] <- NA
+#Nov3: filling out blank cells.
+Breast_monoSomatics  <- Breast_monoSomatics  %>% fill(PUMA_ID, Gene)
+Breast_monoSomatics$Subject.Identifier.for.the.Study <- gsub("\\d+-\\d+\\-", "", Breast_monoSomatics$PUMA_ID)
+#IMPACT data
+Breast_monoSomaticsImpact <- Breast_monoSomatics[(Breast_monoSomatics$Gene != "not done"),]
+#subsetting
+Breast_monoSomaticsImpact <- Breast_monoSomaticsImpact[,c(7,2,3)]
+#filtering out duplication rows
+Breast_monoSomaticsImpact <- unique(Breast_monoSomaticsImpact)
+
+#filtering it out rows where missing values
+Breast_monoSomaticsImpact <- na.omit(Breast_monoSomaticsImpact)
+
+#assigning variants to their respective type
+Breast_monoSomaticsImpact$Alteration <- variantTypeCall(Breast_monoSomaticsImpact$Alteration)
+
+#concatenate variations' types whenever occuring in a given gene for a given subject
+Breast_monoSomaticsImpact <- Breast_monoSomaticsImpact %>% group_by(Subject.Identifier.for.the.Study, Gene) %>% do(Alteration = paste(.$Alteration, collapse = '')) %>% ungroup() %>% mutate(Alteration = unlist(Alteration))
+mat <- as.data.frame(spread(Breast_monoSomaticsImpact, Subject.Identifier.for.the.Study, Alteration))
+row.names(mat) <- mat$Gene
+mat <- mat[,-1]
+
+#Non IMPACT data
+Breast_monoSomaticsNonImpact <- Breast_monoSomatics[(Breast_monoSomatics$Gene == "not done"),]
+Breast_monoSomaticsNonImpact <- Breast_monoSomaticsNonImpact[,c(7,5,6)]
+Breast_monoSomaticsNonImpact <- unique(Breast_monoSomaticsNonImpact)
+Breast_monoSomaticsNonImpact$Subject.Identifier.for.the.Study <- as.character(paste(Breast_monoSomaticsNonImpact$Subject.Identifier.for.the.Study, "*", sep = ""))
+Breast_monoSomaticsNonImpact <- na.omit(Breast_monoSomaticsNonImpact)
+
+#assigning variants to their respective type
+Breast_monoSomaticsNonImpact$Alteration.1 <- variantTypeCall(Breast_monoSomaticsNonImpact$Alteration.1) 
+
+Breast_monoSomaticsNonImpact <- Breast_monoSomaticsNonImpact %>% group_by(Subject.Identifier.for.the.Study, Gene.1) %>% do(Alteration.1 = paste(.$Alteration.1, collapse = '')) %>% ungroup() %>% mutate(Alteration.1 = unlist(Alteration.1))
+
+#creating the mutations matrix for oncoprint
+mat2 <- as.data.frame(spread(Breast_monoSomaticsNonImpact, Subject.Identifier.for.the.Study, Alteration.1))
+mat2 <- subset(mat2, select = colnames(mat2) != "NA*")
+row.names(mat2) <- mat2$Gene.1
+mat2 <- mat2[,-1]
+
+mat <- merge(mat, mat2, by = "row.names", all = T)
+row.names(mat) <- mat$Row.names
+mat <- mat[,-1]
+
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), column_names_gp = gpar(fontsize = 9), column_title = "Oncoplot for Breast_mono tumor", heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE)
+```
+
+##Waterfall and swim plots with oncoplot
+```{r breast_monoWF, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.align = 'left', fig.height = 4, fig.width= 5.2}
+#Waterfalls
+breast_monoWF <- Breast_mono[-27, c(1, 12, 13, 17)]
+#breast_monoWF <- Breast_mono[, c(1, 12, 13, 17)]
+#selecting records for which there are IMPACT and Non-IMPACT genotype data
+breast_monoWF <- breast_monoWF[(breast_monoWF$Subject.Identifier.for.the.Study %in% intersect(breast_monoWF$Subject.Identifier.for.the.Study, gsub("\\*", "", colnames(mat)))),]
+
+breast_monoWF1 <- breast_monoWF[complete.cases(breast_monoWF$Percentage.Change.of.Tumor.Measurement),]
+
+#breast_monoWF <- breast_monoWF[order(-breast_monoWF$Percentage.Change.of.Tumor.Measurement),]
+
+breast_monoWF1$Percentage.Change.of.Tumor.Measurement <- as.numeric(as.character(breast_monoWF1$Percentage.Change.of.Tumor.Measurement))
+
+breast_monoWF1$Progression.Free.Survival.Time..Months. <- as.numeric(as.character(breast_monoWF1$Progression.Free.Survival.Time..Months.))
+
+breast_monoWF1 <- breast_monoWF1[order(-breast_monoWF1$Percentage.Change.of.Tumor.Measurement),]
+
+breast_monoWF1$Subject.Identifier.for.the.Study <- as.character(breast_monoWF1$Subject.Identifier.for.the.Study)
+
+breast_monoWF2 <- rbind(breast_monoWF1, breast_monoWF[is.na(breast_monoWF$Percentage.Change.of.Tumor.Measurement),])
+breast_monoWF2$Percentage.Change.of.Tumor.Measurement <- as.numeric(as.character(breast_monoWF2$Percentage.Change.of.Tumor.Measurement))
+
+breast_monoWF2$Subject.Identifier.for.the.Study <- as.character(breast_monoWF2$Subject.Identifier.for.the.Study)
+
+g1 <- ggplot(breast_monoWF2, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + 
+    geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-101, 101) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 6), legend.title = element_text(size = 8), plot.margin = unit(c(0,0,0,1.6), "cm"), legend.position = "top") + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+g2 <- ggplot(breast_monoWF2, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = Best.Overall.Response)) + geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(), axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6)) + guides(fill=FALSE) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+plot_grid(g1, g2, nrow = 2, align = "v")
+```
+
+```{r breast_monoOncoplot2, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 7, fig.height = 10.1, fig.align = "center"}
+#given the occurrences of missing data for the %change of tumor measurement variable, subset out the mat matrix for the Subject.Identifier where such missing data.
+breast_monoWF2 <- breast_monoWF2[order(-breast_monoWF2$Percentage.Change.of.Tumor.Measurement, breast_monoWF2$Subject.Identifier.for.the.Study),]
+
+d1 <- setdiff(gsub("\\*", "", colnames(mat)), breast_monoWF2$Subject.Identifier.for.the.Study)
+d1 <- sapply(d1, function(x) paste("^",x, "$", sep = ""))
+mat2 <- mat[, !colnames(mat) %in% grep(paste(d1, collapse = "|"), colnames(mat), value = T)]
+#creating a df for the purpose of reordering the mat object passed to the Oncoprint function
+df1 <- breast_monoWF2[,c(1,4)]
+df2<- as.data.frame(colnames(mat2))
+colnames(df2) <- "subjid"
+df2$Subject.Identifier.for.the.Study <- gsub("\\*", "", df2$subjid)
+df3 <- merge(df1, df2, by = "Subject.Identifier.for.the.Study", sort = F)
+
+mat2 <- mat2[,c(as.character(df3$subjid))]
+mat2 <- mat2[rowSums(is.na(mat2)) < dim(mat2)[2],]
+
+oncoPrint(mat2, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), column_names_gp = gpar(fontsize = 9), heatmap_legend_param = list(title = "Alterations",at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE, column_order = NULL)
+```
+<hr/><hr />
+#Breast combo 
+##Distributions of ErBb2 somatic variants w.r.t. clinical endpoints.
+```{r Breast_combo, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#reading Breast combo enrolment data set
+Breast_comboDataSet <- readWorksheet(SummitBioMarker1215, sheet = "Breast combo")
+#instantiate a subset dataframe for the lolliplot: loop through each row of the DataSet dataframe until the 1st row where there is no value, indicating the end of input
+Breast_combo <- Breast_comboDataSet[c(1:min(which(sapply(1:dim(Breast_comboDataSet)[1], function(i) length(unique(as.character(Breast_comboDataSet[c(i),]))) < 3) == TRUE)) -1),]
+
+#tabular views
+kable(t(as.matrix(table(Breast_combo$Mutation.code))), caption = "ErBb2 somatic variants occurences")
+kable(table(Breast_combo$Mutation.code, Breast_combo$Primary.Cell.Type), caption = "ErbB2 mutation by Primary Cell Type")
+#kable(table(Breast_combo$Mutation.code, Breast_combo$Objective.Response.at.Week.8), caption = "ErbB2 mutation by Objective Response at Week 8")
+
+#~Best overall response
+#replace missing value by ND (Not Determined)
+Breast_combo$Best.Overall.Response[is.na(Breast_combo$Best.Overall.Response)] <- "ND"
+#keep first 2 characters for the Best.Overall.Response's attribute value
+Breast_combo$Best.Overall.Response <- as.factor(str_sub(Breast_combo$Best.Overall.Response, 1, 2))
+#setting values to the Best.Overall.Response attribute
+Breast_combo$Best.Overall.Response <- factor(Breast_combo$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "ND"), ordered = TRUE)
+BestOverallResPerVar <-  as.data.frame.matrix(table(Breast_combo$Mutation.code, Breast_combo$Best.Overall.Response))
+#kable(table(Breast_combo$Mutation.code, Breast_combo$Best.Overall.Response), caption = "ErbB2 mutation by Best Overall Response")
+datatable(BestOverallResPerVar, caption = "ErbB2 mutation by Best Overall Response")
+
+ClinicalBenefitPerVar <- as.data.frame.matrix(table(Breast_combo$Mutation.code, Breast_combo$Clinical.Benefit))
+datatable(ClinicalBenefitPerVar, caption = "ErbB2 mutations by Clinical Benefit Status")
+
+#Breast_combo$Clinical.Benefit <- revalue(Breast_combo$Clinical.Benefit, c("pending" = "N/A", "n/a" = "N/A"))
+
+#assessing the potential contribution of ErbB2 somatic variant on Best Overall Response
+##chisq.test(table(na.omit(Breast_combo$Clinical.Benefit, Breast_combo$Mutation.code)))
+```
+<hr /> 
+
+
+##Lolliplot: ErBb2 somatic variants annotated with Best Overall Response values  
+```{r Breast_comboSNV, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.height = 10, fig.width = 10}
+#adding one variable, i.e. the somatic variant coordinate w.r.t. ErbB2 aa sequence
+Breast_combo$ErBb2SomaticVarCoord <- as.numeric(str_extract(Breast_combo$Mutation.code, "\\d+"))
+#adding two additional variables: the wild type aa and the substituted aa
+Breast_combo$ErBb2WildTypeAA <- str_sub(Breast_combo$Mutation.code, 1, 1)
+Breast_combo$ErBb2SubsAA <- gsub("^\\w{1}\\d+", "", Breast_combo$Mutation.code, perl = TRUE)
+
+#reordering the dataframe according to the aa coordinate
+Breast_combo <- Breast_combo[order(Breast_combo$ErBb2SomaticVarCoord),]
+
+#to show the 2nd variant
+Breast_combo[32,19] <- 779
+
+#creating the data structure for the GRanges() GenomicRanges package function
+Breast_comboDf1 <- data.frame(Breast_combo$ErBb2SomaticVarCoord, paste0(Breast_combo$ErBb2WildTypeAA, Breast_combo$ErBb2SomaticVarCoord), Breast_combo$ErBb2SubsAA, Breast_combo$Best.Overall.Response)
+#the Breast_comboDf1 df Erbb2Features 4 columns, the coordinates where the variations map, the WT aa with the coordinate, the variant AA and the clinical response.
+colnames(Breast_comboDf1) <- c("coord", "WTaaCoord", "Var", "Response")
+#creating a 2nd df in order to concatenate the substituions mapping to the same coordinate
+Breast_comboDf2 <- as.data.frame(unique(Breast_comboDf1[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+Breast_comboDf2$SNV <- paste0(Breast_comboDf2$WTaaCoord, Breast_comboDf2$Varalleles)
+#adding it fo the initial Breast_comboDf1 df
+Breast_comboDf1 <- merge(Breast_comboDf1, Breast_comboDf2[,-c(2,3)], by = "WTaaCoord")
+#adding one attribute: concatenation of the clinical response and the variant
+Breast_comboDf1$VarRes <- paste0(Breast_comboDf1$Response, Breast_comboDf1$SNV)
+
+#set order for clinical response value to bottom CR, PR, SD, PD, ND
+Breast_comboDf1$Response <- str_replace_all(str_c(Breast_comboDf1$Response), c("CR" = "E-CR", "PR" = "D-PR", "SD" = "C-SD", "PD" = "B-PD", "ND" = "A-ND"))
+#order the df
+Breast_comboDf1 <- Breast_comboDf1[order(Breast_comboDf1$coord, Breast_comboDf1$Response),]
+
+#duplicated the Breast_comboDf1 Df object for later plotting on the kinase domain 
+Breast_comboDf1_2 <- Breast_comboDf1
+
+Breast_comboDf3 <- Breast_comboDf1
+
+Breast_comboDf1 <- unique(ddply(Breast_comboDf1[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+Breast_comboDf1 <- Breast_comboDf1[order(Breast_comboDf1$coord, Breast_comboDf1$Response),]
+
+Breast_comboDf1[29,4] <- "V777L and L755S"
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+Breast_combo.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(Breast_comboDf1)[1], function(i) rep(Breast_comboDf1$coord[i], Breast_comboDf1$score[i]))), width = 1, names = unlist(sapply(1:dim(Breast_comboDf1)[1], function(i) rep(Breast_comboDf1$SNV[i], Breast_comboDf1$score[i])))))
+
+#adding the stack.factor attribute
+Breast_combo.gr$stack.factor <- unlist(sapply(1:dim(Breast_comboDf1)[1], function(i) paste0(Breast_comboDf1$Response[i], "_", seq(1:Breast_comboDf1$score[i]))))
+Breast_combo.gr$value1 <- 100
+Breast_combo.gr$value2 <- 100 - Breast_combo.gr$value1
+
+Breast_combo.gr$color <- response.color.set[gsub("_\\d*|\\w*-", "", Breast_combo.gr$stack.factor)]
+legend <- list(labels = response, col = "gray80", fill = sapply(response.color.set, `[`, 1))
+
+Breast_comboDf3 <- ddply(Breast_comboDf3, .(WTaaCoord), mutate, idx = seq_along(coord))
+Breast_comboDf3 <- Breast_comboDf3[order(Breast_comboDf3$coord, Breast_comboDf3$Response),]
+Breast_combo.gr$stack.factor <- as.character(Breast_comboDf3$idx)
+
+Breast_comboDf3$SNPsideID <- c(rep("top", 8), rep("bottom", 1), rep("top", 1), rep("bottom", 1), rep("top", 1), rep("bottom", 9), rep("top", 1), rep("bottom", 3), rep("top", 3), rep("bottom", 1), rep("top", 6), rep("bottom", 5), rep("top", 3))
+
+Breast_combo.gr$SNPsideID <- Breast_comboDf3$SNPsideID
+
+#plotting
+lolliplot(Breast_combo.gr, Erbb2Features2, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .7)
+```
+
+
+##Oncoplot: co-occurrence of somatic variations (both IMPACT and NON-IMPACT data sets) 
+```{r Breast_comboOncoplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 7.3, fig.height = 11.3, fig.align = "center"}
+#co-occurring somatic variants dataframe instantiation
+Breast_comboSomatics <- Breast_comboDataSet[c(match(c("Subject Identifier for the Study"), Breast_comboDataSet[,1]):dim(Breast_comboDataSet)[1]),]
+colnames(Breast_comboSomatics) <- Breast_comboSomatics[1,]
+Breast_comboSomatics <- Breast_comboSomatics[-c(1), c(2:7)]
+
+#Nov3: replacing the cfIMPACT string of the PUMA_ID column by NA
+Breast_comboSomatics[Breast_comboSomatics == "cfIMPACT"] <- NA
+#Nov3: filling out blank cells.
+Breast_comboSomatics  <- Breast_comboSomatics  %>% fill(PUMA_ID, Gene)
+Breast_comboSomatics$Subject.Identifier.for.the.Study <- gsub("\\d+-\\d+\\-", "", Breast_comboSomatics$PUMA_ID)
+#IMPACT data
+Breast_comboSomaticsImpact <- Breast_comboSomatics[(Breast_comboSomatics$Gene != "not done"),]
+#subsetting
+Breast_comboSomaticsImpact <- Breast_comboSomaticsImpact[,c(7,2,3)]
+#filtering out duplication rows
+Breast_comboSomaticsImpact <- unique(Breast_comboSomaticsImpact)
+
+#filtering it out rows where missing values
+Breast_comboSomaticsImpact <- na.omit(Breast_comboSomaticsImpact)
+
+#assigning variants to their respective type
+Breast_comboSomaticsImpact$Alteration <- variantTypeCall(Breast_comboSomaticsImpact$Alteration)
+
+#concatenate variations' types whenever occuring in a given gene for a given subject
+Breast_comboSomaticsImpact <- Breast_comboSomaticsImpact %>% group_by(Subject.Identifier.for.the.Study, Gene) %>% do(Alteration = paste(.$Alteration, collapse = '')) %>% ungroup() %>% mutate(Alteration = unlist(Alteration))
+mat <- as.data.frame(spread(Breast_comboSomaticsImpact, Subject.Identifier.for.the.Study, Alteration))
+row.names(mat) <- mat$Gene
+mat <- mat[,-1]
+
+#Non IMPACT data
+Breast_comboSomaticsNonImpact <- Breast_comboSomatics[(Breast_comboSomatics$Gene == "not done"),]
+Breast_comboSomaticsNonImpact <- Breast_comboSomaticsNonImpact[,c(7,5,6)]
+Breast_comboSomaticsNonImpact <- unique(Breast_comboSomaticsNonImpact)
+Breast_comboSomaticsNonImpact$Subject.Identifier.for.the.Study <- as.character(paste(Breast_comboSomaticsNonImpact$Subject.Identifier.for.the.Study, "*", sep = ""))
+Breast_comboSomaticsNonImpact <- na.omit(Breast_comboSomaticsNonImpact)
+
+#assigning variants to their respective type
+Breast_comboSomaticsNonImpact$Alteration.1 <- variantTypeCall(Breast_comboSomaticsNonImpact$Alteration.1)
+Breast_comboSomaticsNonImpact$Alteration.1 <- sub("\\w+\\d+\\w+", "Missense;", trimws(Breast_comboSomaticsNonImpact$Alteration.1, which = c("both")))
+
+Breast_comboSomaticsNonImpact <- Breast_comboSomaticsNonImpact %>% group_by(Subject.Identifier.for.the.Study, Gene.1) %>% do(Alteration.1 = paste(.$Alteration.1, collapse = '')) %>% ungroup() %>% mutate(Alteration.1 = unlist(Alteration.1))
+
+#creating the mutations matrix for oncoprint
+mat2 <- as.data.frame(spread(Breast_comboSomaticsNonImpact, Subject.Identifier.for.the.Study, Alteration.1))
+mat2 <- subset(mat2, select = colnames(mat2) != "NA*")
+row.names(mat2) <- mat2$Gene.1
+mat2 <- mat2[,-1]
+
+mat <- merge(mat, mat2, by = "row.names", all = T)
+row.names(mat) <- mat$Row.names
+mat <- mat[,-1]
+
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 5), column_names_gp = gpar(fontsize = 9), column_title = "Oncoplot for Breast_combo tumor", heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE)
+```
+
+##Waterfall and swim plots with oncoplot
+```{r Breast_comboWF, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.align = "left", fig.height = 4, fig.width = 5.3}
+#Waterfalls
+Breast_comboWF <- Breast_combo[,c(1, 12, 13, 17)]
+
+#selecting records for which there are IMPACT genotype data
+Breast_comboWF <- Breast_comboWF[(Breast_comboWF$Subject.Identifier.for.the.Study %in% intersect(Breast_comboWF$Subject.Identifier.for.the.Study, gsub("\\*", "", colnames(mat)))),]
+
+Breast_comboWF <- Breast_comboWF[complete.cases(Breast_comboWF$Percentage.Change.of.Tumor.Measurement),]
+Breast_comboWF <- Breast_comboWF[order(-Breast_comboWF$Percentage.Change.of.Tumor.Measurement),]
+
+##Breast_comboWF$Subject.Identifier.for.the.Study <- as.character(Breast_comboWF$Subject.Identifier.for.the.Study)
+
+Breast_comboWF$Best.Overall.Response <- factor(Breast_comboWF$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "NA"))
+
+g1 <- ggplot(Breast_comboWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-100, 100) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 5), legend.title = element_text(size = 7), legend.position = "top", plot.margin = unit(c(0,0,0,1.6), "cm"))+  scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+#+ scale_y_continuous(position = "right")
+
+g2 <- ggplot(Breast_comboWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = Best.Overall.Response)) +  geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(), axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6)) + guides(fill=FALSE) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+plot_grid(g1, g2, nrow = 2, align = "v")
+```
+  
+```{r breast_comboOncoplot2, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 7.3, fig.height = 12, fig.align = "center"}
+#given the occurrences of missing data for the %change of tumor measurement variable, subset out the mat matrix for the Subject.Identifier where such missing data.
+d1 <- setdiff(gsub("\\*", "", colnames(mat)), Breast_comboWF$Subject.Identifier.for.the.Study)
+mat2 <- mat[, !colnames(mat) %in% grep(paste(d1, collapse = "|"), colnames(mat), value = T)]
+#creating a df for the purpose of reordering the mat object passed to the Oncoprint function
+df1 <- Breast_comboWF[,c(1,4)]
+df2<- as.data.frame(colnames(mat2))
+colnames(df2) <- "subjid"
+df2$Subject.Identifier.for.the.Study <- gsub("\\*", "", df2$subjid)
+df3 <- unique(merge(df1, df2, by = "Subject.Identifier.for.the.Study", sort = F))
+
+#removing redundant 1200 record
+##mat2 <- mat2[,!(colnames(mat2) == "0264*.1")]
+
+oncoPrint(mat2[c(as.character(df3$subjid))], get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 5), pct_gp = gpar(fontsize = 6), column_names_gp = gpar(fontsize = 9), heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE, column_order = NULL)
+```
+
+
+<hr /><hr />  
+#cervical  
+##Distributions of ErBb2 somatic variants w.r.t. clinical endpoints.
+```{r cervical, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#reading cervical enrolment data set
+cervicalDataSet <- readWorksheet(SummitBioMarker1215, sheet = "Cervical")
+#instantiate a subset dataframe for the lolliplot: loop through each row of the DataSet dataframe until the 1st row where there is no value, indicating the end of input
+cervical <- cervicalDataSet[c(1:min(which(sapply(1:dim(cervicalDataSet)[1], function(i) length(unique(as.character(cervicalDataSet[c(i),]))) < 3) == TRUE)) -1),]
+
+#tabular views
+kable(t(as.matrix(table(cervical$Mutation.code))), caption = "ErBb2 somatic variants occurences")
+kable(table(cervical$Mutation.code, cervical$Primary.Cell.Type
+), caption = "ErbB2 mutation by Primary Cell Type")
+kable(table(cervical$Mutation.code, cervical$Objective.Response.at.Week.8), caption = "ErbB2 mutation by Objective Response at Week 8")
+
+#~Best overall response
+cervical$Best.Overall.Response[is.na(cervical$Best.Overall.Response)] <- "ND"
+#keep first 2 characters for the Best.Overall.Response's attribute value
+cervical$Best.Overall.Response <- as.factor(str_sub(cervical$Best.Overall.Response, 1, 2))
+#setting values to the Best.Overall.Response attribute
+cervical$Best.Overall.Response <- factor(cervical$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "ND"), ordered = TRUE)
+BestOverallResPerVar <-  as.data.frame.matrix(table(cervical$Mutation.code, cervical$Best.Overall.Response))
+datatable(BestOverallResPerVar, caption = "ErbB2 mutation by Best Overall Response")
+#plotting
+
+ClinicalBenefitPerVar <- as.data.frame.matrix(table(cervical$Mutation.code, cervical$Clinical.Benefit))
+datatable(ClinicalBenefitPerVar, caption = "ErbB2 mutations by Clinical Benefit Status")
+
+#cervical$Clinical.Benefit <- revalue(cervical$Clinical.Benefit, c("pending"="N/A"))
+```
+<hr /> 
+
+##Lolliplot: Annotated ErBb2 somatic variants
+```{r cervicalLolliplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+# adding one variable, i.e. the somatic variant coordinate w.r.t. ErbB2 aa
+# sequence
+cervical$ErBb2SomaticVarCoord <- as.numeric(str_extract(cervical$Mutation.code, "\\d+"))
+# adding two additional variables: the wild type aa and the substituted aa
+cervical$ErBb2WildTypeAA <- str_sub(cervical$Mutation.code, 1, 1)
+cervical$ErBb2SubsAA <- gsub("^\\w{1}\\d+", "", cervical$Mutation.code, perl = T)
+
+# reordering the dataframe according to the aa coordinate
+cervical <- cervical[order(cervical$ErBb2SomaticVarCoord), ]
+
+#creating the data structure for the GRanges() GenomicRanges package function
+cervicalDf1 <- data.frame(cervical$ErBb2SomaticVarCoord, paste0(cervical$ErBb2WildTypeAA, cervical$ErBb2SomaticVarCoord), cervical$ErBb2SubsAA, cervical$Best.Overall.Response)
+#the cervicalDf1 df Erbb2Features 4 columns, the coordinates where the variations map, the WT aa with the coordinate, the variant AA and the clinical response.
+colnames(cervicalDf1) <- c("coord", "WTaaCoord", "Var", "Response")
+#creating a 2nd df in order to concatenate the substituions mapping to the same coordinate
+cervicalDf2 <- as.data.frame(unique(cervicalDf1[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+cervicalDf2$SNV <- paste0(cervicalDf2$WTaaCoord, cervicalDf2$Varalleles)
+#adding it fo the initial cervicalDf1 df
+cervicalDf1 <- merge(cervicalDf1, cervicalDf2[,-c(2,3)], by = "WTaaCoord")
+#adding one attribute: concatenation of the clinical response and the variant
+cervicalDf1$VarRes <- paste0(cervicalDf1$Response, cervicalDf1$SNV)
+# replacing NA with the 'ND' string value for Not Determined
+##cervicalDf1$Response <- gsub("NA", "ND",cervicalDf1$Response)
+#set order for clinical response value to bottom CR, PR, SD, PD, ND
+cervicalDf1$Response <- str_replace_all(str_c(cervicalDf1$Response), c("CR" = "E-CR", "PR" = "D-PR", "SD" = "C-SD", "PD" = "B-PD", "ND" = "A-ND"))
+#order the df
+cervicalDf1 <- cervicalDf1[order(cervicalDf1$coord, cervicalDf1$Response),]
+
+##
+cervicalDf3 <- cervicalDf1
+##
+
+cervicalDf1 <- unique(ddply(cervicalDf1[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+cervicalDf1 <- cervicalDf1[order(cervicalDf1$coord, cervicalDf1$Response),]
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+cervical.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(cervicalDf1)[1], function(i) rep(cervicalDf1$coord[i], cervicalDf1$score[i]))), width = 1, names = unlist(sapply(1:dim(cervicalDf1)[1], function(i) rep(cervicalDf1$SNV[i], cervicalDf1$score[i])))))
+
+#adding the stack.factor attribute
+cervical.gr$stack.factor <- unlist(sapply(1:dim(cervicalDf1)[1], function(i) paste0(cervicalDf1$Response[i], "_", seq(1:cervicalDf1$score[i]))))
+cervical.gr$value1 <- 100
+cervical.gr$value2 <- 100 - cervical.gr$value1
+
+cervical.gr$color <- response.color.set[gsub("_\\d*|\\w*-", "", cervical.gr$stack.factor)]
+legend <- list(labels = response, col = "gray80", fill = sapply(response.color.set, `[`, 1))
+
+cervicalDf3 <- ddply(cervicalDf3, .(WTaaCoord), mutate, idx = seq_along(coord))
+cervicalDf3 <- cervicalDf3[order(cervicalDf3$coord, cervicalDf3$Response),]
+cervical.gr$stack.factor <- as.character(cervicalDf3$idx)
+
+#plotting
+lolliplot(cervical.gr, Erbb2Features, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .7, jitter = "label")
+
+```
+
+##Oncoplot: co-occurrence of somatic variations (both IMPACT and NON-IMPACT data sets) 
+```{r cervicalOncoplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 7, fig.height = 6.2}
+#co-occurring somatic variants dataframe instantiation
+cervicalSomatics <- cervicalDataSet[c(match(c("Subject Identifier for the Study"), cervicalDataSet[,1]):dim(cervicalDataSet)[1]),]
+colnames(cervicalSomatics) <- cervicalSomatics[1,]
+cervicalSomatics <- cervicalSomatics[-c(1), c(2:7)]
+
+#Nov3: replacing the cfIMPACT string of the PUMA_ID column by NA
+cervicalSomatics[cervicalSomatics == "cfIMPACT"] <- NA
+#Nov3: filling out blank cells.
+cervicalSomatics  <- cervicalSomatics  %>% fill(PUMA_ID, Gene)
+cervicalSomatics$Subject.Identifier.for.the.Study <- gsub("\\d+-\\d+\\-", "", cervicalSomatics$PUMA_ID)
+#IMPACT data
+cervicalSomaticsImpact <- cervicalSomatics[(cervicalSomatics$Gene != "not done"),]
+#subsetting
+cervicalSomaticsImpact <- cervicalSomaticsImpact[,c(7,2,3)]
+#filtering out duplication rows
+cervicalSomaticsImpact <- unique(cervicalSomaticsImpact)
+
+#filtering it out rows where missing values
+cervicalSomaticsImpact <- na.omit(cervicalSomaticsImpact)
+
+#assigning variants to their respective type
+cervicalSomaticsImpact$Alteration <- variantTypeCall(cervicalSomaticsImpact$Alteration)
+
+#concatenate variations' types whenever occuring in a given gene for a given subject
+cervicalSomaticsImpact <- cervicalSomaticsImpact %>% group_by(Subject.Identifier.for.the.Study, Gene) %>% do(Alteration = paste(.$Alteration, collapse = '')) %>% ungroup() %>% mutate(Alteration = unlist(Alteration))
+mat <- as.data.frame(spread(cervicalSomaticsImpact, Subject.Identifier.for.the.Study, Alteration))
+row.names(mat) <- mat$Gene
+mat <- mat[,-1]
+
+#Non IMPACT data
+cervicalSomaticsNonImpact <- cervicalSomatics[(cervicalSomatics$Gene == "not done"),]
+cervicalSomaticsNonImpact <- cervicalSomaticsNonImpact[,c(7,5,6)]
+cervicalSomaticsNonImpact <- unique(cervicalSomaticsNonImpact)
+cervicalSomaticsNonImpact$Subject.Identifier.for.the.Study <- as.character(paste(cervicalSomaticsNonImpact$Subject.Identifier.for.the.Study, "*", sep = ""))
+cervicalSomaticsNonImpact <- na.omit(cervicalSomaticsNonImpact)
+
+#assigning variants to their respective type
+cervicalSomaticsNonImpact$Alteration.1 <- variantTypeCall(cervicalSomaticsNonImpact$Alteration.1)
+
+cervicalSomaticsNonImpact <- cervicalSomaticsNonImpact %>% group_by(Subject.Identifier.for.the.Study, Gene.1) %>% do(Alteration.1 = paste(.$Alteration.1, collapse = '')) %>% ungroup() %>% mutate(Alteration.1 = unlist(Alteration.1))
+
+#creating the mutations matrix for oncoprint
+mat2 <- as.data.frame(spread(cervicalSomaticsNonImpact, Subject.Identifier.for.the.Study, Alteration.1))
+mat2 <- subset(mat2, select = colnames(mat2) != "NA*")
+row.names(mat2) <- mat2$Gene.1
+mat2 <- mat2[,-1]
+
+mat <- merge(mat, mat2, by = "row.names", all = T)
+row.names(mat) <- mat$Row.names
+mat <- mat[,-1]
+
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), column_title = "Oncoplot for cervical tumor", heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE)
+```
+
+##Waterfall and swim plots with oncoplot
+```{r cervicalWF, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.align = 'left', fig.height = 4, fig.width= 5.2}
+#Waterfalls
+cervicalWF <- cervical[,c(1, 12, 13, 17)]
+
+#selecting records for which there are IMPACT genotype data
+cervicalWF <- cervicalWF[(cervicalWF$Subject.Identifier.for.the.Study %in% intersect(cervicalWF$Subject.Identifier.for.the.Study, gsub("\\*", "", colnames(mat)))),]
+
+cervicalWF <- cervicalWF[complete.cases(cervicalWF$Percentage.Change.of.Tumor.Measurement),]
+cervicalWF <- cervicalWF[order(-cervicalWF$Percentage.Change.of.Tumor.Measurement),]
+
+##cervicalWF$Subject.Identifier.for.the.Study <- as.character(cervicalWF$Subject.Identifier.for.the.Study)
+
+cervicalWF$Best.Overall.Response <- factor(cervicalWF$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "NA"))
+
+g1 <- ggplot(cervicalWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-100, 100) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 5), legend.title = element_text(size = 7), legend.position = "top", plot.margin = unit(c(0,0,0,1.6), "cm"))+ scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+g2 <- ggplot(cervicalWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = Best.Overall.Response)) +  geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(), axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6)) + guides(fill=FALSE) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+plot_grid(g1, g2, nrow = 2, align = "v")
+```
+
+```{r cervicallOncoplot2, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width= 6.9, fig.height = 6.0, fig.align = 'center'}
+#given the occurrences of missing data for the %change of tumor measurement variable, subset out the mat matrix for the Subject.Identifier where such missing data.
+d1 <- setdiff(gsub("\\*", "", colnames(mat)), cervicalWF$Subject.Identifier.for.the.Study)
+mat2 <- mat[, !colnames(mat) %in% grep(paste(d1, collapse = "|"), colnames(mat), value = T)]
+#creating a df for the purpose of reordering the mat object passed to the Oncoprint function
+df1 <- cervicalWF[,c(1,4)]
+df2<- as.data.frame(colnames(mat2))
+colnames(df2) <- "subjid"
+df2$Subject.Identifier.for.the.Study <- gsub("\\*", "", df2$subjid)
+df3 <- merge(df1, df2, by = "Subject.Identifier.for.the.Study", sort = F)
+
+
+oncoPrint(mat2[c(as.character(df3$subjid))], get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE, column_order = NULL)
+```
+
+<hr /><hr />
+
+#colorectal  
+##Distributions of ErBb2 somatic variants w.r.t. clinical endpoints.
+```{r colorectal, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#reading enrolment data set
+colorectalDataSet <- readWorksheet(SummitBioMarker1215, sheet = "Colorectal")
+#instantiate a subset dataframe for the lolliplot: loop through each row of the DataSet dataframe until the 1st row where there is no value, indicating the end of input
+colorectal <- colorectalDataSet[c(1:min(which(sapply(1:dim(colorectalDataSet)[1], function(i) length(unique(as.character(colorectalDataSet[c(i),]))) < 3) == TRUE)) -1),]
+
+#tabular views
+kable(t(as.matrix(table(colorectal$Mutation.code))), caption = "ErBb2 somatic variants occurences")
+kable(table(colorectal$Mutation.code, colorectal$Primary.Cell.Type
+), caption = "ErbB2 mutation by Primary Cell Type")
+kable(table(colorectal$Mutation.code, colorectal$Objective.Response.at.Week.8), caption = "ErbB2 mutation by Objective Response at Week 8")
+
+#~Best overall response
+colorectal$Best.Overall.Response[is.na(colorectal$Best.Overall.Response)] <- "ND"
+#keep first 2 characters for the Best.Overall.Response's attribute value
+colorectal$Best.Overall.Response <- as.factor(str_sub(colorectal$Best.Overall.Response, 1, 2))
+#setting values to the Best.Overall.Response attribute
+colorectal$Best.Overall.Response <- factor(colorectal$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "ND"), ordered = TRUE)
+BestOverallResPerVar <-  as.data.frame.matrix(table(colorectal$Mutation.code, colorectal$Best.Overall.Response))
+datatable(BestOverallResPerVar, caption = "ErbB2 mutation by Best Overall Response")
+
+ClinicalBenefitPerVar <- as.data.frame.matrix(table(colorectal$Mutation.code, colorectal$Clinical.Benefit))
+datatable(ClinicalBenefitPerVar, caption = "ErbB2 mutations by Clinical Benefit Status")
+
+#colorectal$Clinical.Benefit <- revalue(colorectal$Clinical.Benefit, c("pending"="N/A"))
+
+colorectal$Clinical.Benefit <- factor(colorectal$Clinical.Benefit, levels = c("YES", "NO", "N/A"), ordered = TRUE)
+```
+<hr /> 
+
+##Lolliplot: Annotated ErBb2 somatic variants
+```{r colorectalSNV, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+# adding one variable, i.e. the somatic variant coordinate w.r.t. ErbB2 aa
+# sequence
+colorectal$ErBb2SomaticVarCoord <- as.numeric(str_extract(colorectal$Mutation.code, "\\d+"))
+# adding two additional variables: the wild type aa and the substituted aa
+colorectal$ErBb2WildTypeAA <- str_sub(colorectal$Mutation.code, 1, 1)
+colorectal$ErBb2SubsAA <- gsub("^\\w{1}\\d+", "", colorectal$Mutation.code, perl = T)
+
+# reordering the dataframe according to the aa coordinate
+colorectal <- colorectal[order(colorectal$ErBb2SomaticVarCoord), ]
+
+#creating the data structure for the GRanges() GenomicRanges package function
+colorectalDf1 <- data.frame(colorectal$ErBb2SomaticVarCoord, paste0(colorectal$ErBb2WildTypeAA, colorectal$ErBb2SomaticVarCoord), colorectal$ErBb2SubsAA, colorectal$Best.Overall.Response)
+
+#the colorectalDf1 df Erbb2Features 4 columns, the coordinates where the variations map, the WT aa with the coordinate, the variant AA and the clinical response.
+colnames(colorectalDf1) <- c("coord", "WTaaCoord", "Var", "Response")
+
+#creating a 2nd df in order to concatenate the substitutions mapping to the same coordinate
+colorectalDf2 <- as.data.frame(unique(colorectalDf1[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+colorectalDf2$SNV <- paste0(colorectalDf2$WTaaCoord, colorectalDf2$Varalleles)
+
+#adding it fo the initial colorectalDf1 df
+colorectalDf1 <- merge(colorectalDf1, colorectalDf2[,-c(2,3)], by = "WTaaCoord")
+
+#adding one attribute: concatenation of the clinical response and the variant
+colorectalDf1$VarRes <- paste0(colorectalDf1$Response, colorectalDf1$SNV)
+
+#set order for clinical response value to bottom CR, PR, SD, PD, ND
+colorectalDf1$Response <- str_replace_all(str_c(colorectalDf1$Response), c("CR" = "E-CR", "PR" = "D-PR", "SD" = "C-SD", "PD" = "B-PD", "ND" = "A-ND"))
+#order the df
+colorectalDf1 <- colorectalDf1[order(colorectalDf1$coord, colorectalDf1$Response),]
+
+##
+colorectalDf3 <- colorectalDf1
+##
+
+colorectalDf1 <- unique(ddply(colorectalDf1[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+colorectalDf1 <- colorectalDf1[order(colorectalDf1$coord, colorectalDf1$Response),]
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+colorectal.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(colorectalDf1)[1], function(i) rep(colorectalDf1$coord[i], colorectalDf1$score[i]))), width = 1, names = unlist(sapply(1:dim(colorectalDf1)[1], function(i) rep(colorectalDf1$SNV[i], colorectalDf1$score[i])))))
+
+#adding the stack.factor attribute
+colorectal.gr$stack.factor <- unlist(sapply(1:dim(colorectalDf1)[1], function(i) paste0(colorectalDf1$Response[i], "_", seq(1:colorectalDf1$score[i]))))
+colorectal.gr$value1 <- 100
+colorectal.gr$value2 <- 100 - colorectal.gr$value1
+
+colorectal.gr$color <- response.color.set[gsub("_\\d*|\\w*-", "", colorectal.gr$stack.factor)]
+legend <- list(labels = response, col = "gray80", fill = sapply(response.color.set, `[`, 1))
+
+colorectalDf3 <- ddply(colorectalDf3, .(WTaaCoord), mutate, idx = seq_along(coord))
+colorectalDf3 <- colorectalDf3[order(colorectalDf3$coord, colorectalDf3$Response),]
+colorectal.gr$stack.factor <- as.character(colorectalDf3$idx)
+
+#plotting
+lolliplot(colorectal.gr, Erbb2Features, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .7, jitter = "label")
+```
+  
+##Oncoplot: co-occurrence of somatic variations (both IMPACT and NON-IMPACT data sets) 
+```{r colorectalOncoplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 7, fig.height = 8}
+#co-occurring somatic variants dataframe instantiation
+colorectalSomatics <- colorectalDataSet[c(match(c("Subject Identifier for the Study"), colorectalDataSet[,1]):dim(colorectalDataSet)[1]),]
+colnames(colorectalSomatics) <- colorectalSomatics[1,]
+colorectalSomatics <- colorectalSomatics[-c(1), c(2:7)]
+
+#Nov3: replacing the cfIMPACT string of the PUMA_ID column by NA
+colorectalSomatics[colorectalSomatics == "cfIMPACT"] <- NA
+#Nov3: filling out blank cells.
+colorectalSomatics  <- colorectalSomatics  %>% fill(PUMA_ID, Gene)
+colorectalSomatics$Subject.Identifier.for.the.Study <- gsub("\\d+-\\d+\\-", "", colorectalSomatics$PUMA_ID)
+#IMPACT data
+colorectalSomaticsImpact <- colorectalSomatics[(colorectalSomatics$Gene != "not done"),]
+#subsetting
+colorectalSomaticsImpact <- colorectalSomaticsImpact[,c(7,2,3)]
+#filtering out duplication rows
+colorectalSomaticsImpact <- unique(colorectalSomaticsImpact)
+
+#filtering it out rows where missing values
+colorectalSomaticsImpact <- na.omit(colorectalSomaticsImpact)
+
+#assigning variants to their respective type
+colorectalSomaticsImpact$Alteration <- variantTypeCall(colorectalSomaticsImpact$Alteration)
+
+#concatenate variations' types whenever occuring in a given gene for a given subject
+colorectalSomaticsImpact <- colorectalSomaticsImpact %>% group_by(Subject.Identifier.for.the.Study, Gene) %>% do(Alteration = paste(.$Alteration, collapse = '')) %>% ungroup() %>% mutate(Alteration = unlist(Alteration))
+mat <- as.data.frame(spread(colorectalSomaticsImpact, Subject.Identifier.for.the.Study, Alteration))
+row.names(mat) <- mat$Gene
+mat <- mat[,-1]
+
+#Non IMPACT data
+colorectalSomaticsNonImpact <- colorectalSomatics[(colorectalSomatics$Gene == "not done"),]
+colorectalSomaticsNonImpact <- colorectalSomaticsNonImpact[,c(7,5,6)]
+colorectalSomaticsNonImpact <- unique(colorectalSomaticsNonImpact)
+colorectalSomaticsNonImpact$Subject.Identifier.for.the.Study <- as.character(paste(colorectalSomaticsNonImpact$Subject.Identifier.for.the.Study, "*", sep = ""))
+colorectalSomaticsNonImpact <- na.omit(colorectalSomaticsNonImpact)
+
+#assigning variants to their respective type
+colorectalSomaticsNonImpact$Alteration.1 <- variantTypeCall(colorectalSomaticsNonImpact$Alteration.1)
+
+colorectalSomaticsNonImpact <- colorectalSomaticsNonImpact %>% group_by(Subject.Identifier.for.the.Study, Gene.1) %>% do(Alteration.1 = paste(.$Alteration.1, collapse = '')) %>% ungroup() %>% mutate(Alteration.1 = unlist(Alteration.1))
+
+#creating the mutations matrix for oncoprint
+mat2 <- as.data.frame(spread(colorectalSomaticsNonImpact, Subject.Identifier.for.the.Study, Alteration.1))
+mat2 <- subset(mat2, select = colnames(mat2) != "NA*")
+row.names(mat2) <- mat2$Gene.1
+mat2 <- as.data.frame(mat2[,-1])
+row.names(mat2) <- "ERBB2"
+colnames(mat2) <- "1150*"
+
+mat <- merge(mat, mat2, by = "row.names", all = T)
+row.names(mat) <- mat$Row.names
+mat <- mat[,-1]
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), column_title = "Oncoplot for colorectal tumor", heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp", "fusionAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp", "Fusion & Amp")), show_column_names = TRUE)
+```
+
+##Waterfall and swim plots with oncoplot
+```{r colorectalWF, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.align = 'left', fig.height = 4, fig.width = 5.1}
+#Waterfalls
+colorectalWF <- colorectal[,c(1, 12, 13, 17)]
+
+#selecting records for which there are IMPACT genotype data
+colorectalWF <- colorectalWF[(colorectalWF$Subject.Identifier.for.the.Study %in% intersect(colorectalWF$Subject.Identifier.for.the.Study, gsub("\\*", "", colnames(mat)))),]
+
+colorectalWF <- colorectalWF[complete.cases(colorectalWF$Percentage.Change.of.Tumor.Measurement),]
+colorectalWF <- colorectalWF[order(-colorectalWF$Percentage.Change.of.Tumor.Measurement),]
+
+##colorectalWF$Subject.Identifier.for.the.Study <- as.character(colorectalWF$Subject.Identifier.for.the.Study)
+
+colorectalWF$Best.Overall.Response <- factor(colorectalWF$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "NA"))
+
+g1 <- ggplot(colorectalWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-100, 100) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 5), legend.title = element_text(size = 7), legend.position = "top", plot.margin = unit(c(0,0,0,1.6), "cm")) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+g2 <- ggplot(colorectalWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = Best.Overall.Response)) +  geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(), axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6)) + guides(fill=FALSE) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+plot_grid(g1, g2, nrow = 2, align = "v")
+```
+
+```{r colorectallOncoplot2, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width= 6.9, fig.height = 6.0, fig.align = 'center'}
+#given the occurrences of missing data for the %change of tumor measurement variable, subset out the mat matrix for the Subject.Identifier where such missing data.
+##d1 <- setdiff(gsub("\\*", "", colnames(mat)), colorectalWF$Subject.Identifier.for.the.Study)
+##mat2 <- mat[, !colnames(mat) %in% grep(paste(d1, collapse = "|"), colnames(mat), value = T)]
+#creating a df for the purpose of reordering the mat object passed to the Oncoprint function
+df1 <- colorectalWF[,c(1,4)]
+df2 <- as.data.frame(colnames(mat))
+colnames(df2) <- "subjid"
+df2$Subject.Identifier.for.the.Study <- gsub("\\*", "", df2$subjid)
+df3 <- merge(df1, df2, by = "Subject.Identifier.for.the.Study", sort = F)
+
+oncoPrint(mat[c(as.character(df3$subjid))], get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp", "fusionAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp", "Fusion & Amp")), show_column_names = TRUE, column_order = NULL)
+```
+
+<hr /><hr />
+
+#Endometrial  
+##Distributions of ErBb2 somatic variants w.r.t. clinical endpoints.
+```{r endometrial, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#reading enrolment data set
+endometrialDataSet <- readWorksheet(SummitBioMarker1215, sheet = "Endometrial")
+#instantiate a subset dataframe for the lolliplot: loop through each row of the DataSet dataframe until the 1st row where there is no value, indicating the end of input
+endometrial <- endometrialDataSet[c(1:min(which(sapply(1:dim(endometrialDataSet)[1], function(i) length(unique(as.character(endometrialDataSet[c(i),]))) < 3) == TRUE)) -1),]
+
+#tabular views
+kable(t(as.matrix(table(endometrial$Mutation.code))), caption = "ErBb2 somatic variants occurences")
+kable(table(endometrial$Mutation.code, endometrial$Primary.Cell.Type
+), caption = "ErbB2 mutation by Primary Cell Type")
+kable(table(endometrial$Mutation.code, endometrial$Objective.Response.at.Week.8), caption = "ErbB2 mutation by Objective Response at Week 8")
+
+#~Best overall response
+endometrial$Best.Overall.Response[is.na(endometrial$Best.Overall.Response)] <- "ND"
+#keep first 2 characters for the Best.Overall.Response's attribute value
+endometrial$Best.Overall.Response <- as.factor(str_sub(endometrial$Best.Overall.Response, 1, 2))
+#setting values to the Best.Overall.Response attribute
+endometrial$Best.Overall.Response <- factor(endometrial$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "ND"), ordered = TRUE)
+BestOverallResPerVar <-  as.data.frame.matrix(table(endometrial$Mutation.code, endometrial$Best.Overall.Response))
+datatable(BestOverallResPerVar, caption = "ErbB2 mutation by Best Overall Response")
+
+ClinicalBenefitPerVar <- as.data.frame.matrix(table(endometrial$Mutation.code, endometrial$Clinical.Benefit))
+datatable(ClinicalBenefitPerVar, caption = "ErbB2 mutations by Clinical Benefit Status")
+
+#endometrial$Clinical.Benefit <- revalue(endometrial$Clinical.Benefit, c("pending"="N/A"))
+
+endometrial$Clinical.Benefit <- factor(endometrial$Clinical.Benefit, levels = c("YES", "NO", "N/A"), ordered = TRUE)
+```
+<hr /> 
+
+##Lolliplot: Annotated ErBb2 somatic variants
+```{r endometrialSNV, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+# adding one variable, i.e. the somatic variant coordinate w.r.t. ErbB2 aa
+# sequence
+endometrial$ErBb2SomaticVarCoord <- as.numeric(str_extract(endometrial$Mutation.code, 
+    "\\d+"))
+# adding two additional variables: the wild type aa and the substituted aa
+endometrial$ErBb2WildTypeAA <- str_sub(endometrial$Mutation.code, 1, 1)
+endometrial$ErBb2SubsAA <- gsub("^\\w{1}\\d+", "", endometrial$Mutation.code, perl = T)
+
+# reordering the dataframe according to the aa coordinate
+endometrial <- endometrial[order(endometrial$ErBb2SomaticVarCoord), ]
+
+#creating the data structure for the GRanges() GenomicRanges package function
+endometrialDf1 <- data.frame(endometrial$ErBb2SomaticVarCoord, paste0(endometrial$ErBb2WildTypeAA, endometrial$ErBb2SomaticVarCoord), endometrial$ErBb2SubsAA, endometrial$Best.Overall.Response)
+#the endometrialDf1 df Erbb2Features 4 columns, the coordinates where the variations map, the WT aa with the coordinate, the variant AA and the clinical response.
+colnames(endometrialDf1) <- c("coord", "WTaaCoord", "Var", "Response")
+#creating a 2nd df in order to concatenate the substituions mapping to the same coordinate
+endometrialDf2 <- as.data.frame(unique(endometrialDf1[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+endometrialDf2$SNV <- paste0(endometrialDf2$WTaaCoord, endometrialDf2$Varalleles)
+#adding it fo the initial endometrialDf1 df
+endometrialDf1 <- merge(endometrialDf1, endometrialDf2[,-c(2,3)], by = "WTaaCoord")
+#adding one attribute: concatenation of the clinical response and the variant
+endometrialDf1$VarRes <- paste0(endometrialDf1$Response, endometrialDf1$SNV)
+
+#set order for clinical response value to bottom CR, PR, SD, PD, ND
+endometrialDf1$Response <- str_replace_all(str_c(endometrialDf1$Response), c("CR" = "E-CR", "PR" = "D-PR", "SD" = "C-SD", "PD" = "B-PD", "ND" = "A-ND"))
+#order the df
+endometrialDf1 <- endometrialDf1[order(endometrialDf1$coord, endometrialDf1$Response),]
+
+##
+endometrialDf3 <- endometrialDf1
+##
+
+endometrialDf1 <- unique(ddply(endometrialDf1[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+endometrialDf1 <- endometrialDf1[order(endometrialDf1$coord, endometrialDf1$Response),]
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+endometrial.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(endometrialDf1)[1], function(i) rep(endometrialDf1$coord[i], endometrialDf1$score[i]))), width = 1, names = unlist(sapply(1:dim(endometrialDf1)[1], function(i) rep(endometrialDf1$SNV[i], endometrialDf1$score[i])))))
+
+#adding the stack.factor attribute
+endometrial.gr$stack.factor <- unlist(sapply(1:dim(endometrialDf1)[1], function(i) paste0(endometrialDf1$Response[i], "_", seq(1:endometrialDf1$score[i]))))
+endometrial.gr$value1 <- 100
+endometrial.gr$value2 <- 100 - endometrial.gr$value1
+
+endometrial.gr$color <- response.color.set[gsub("_\\d*|\\w*-", "", endometrial.gr$stack.factor)]
+legend <- list(labels = response, col = "gray80", fill = sapply(response.color.set, `[`, 1))
+
+endometrialDf3 <- ddply(endometrialDf3, .(WTaaCoord), mutate, idx = seq_along(coord))
+endometrialDf3 <- endometrialDf3[order(endometrialDf3$coord, endometrialDf3$Response),]
+endometrial.gr$stack.factor <- as.character(endometrialDf3$idx)
+
+#plotting
+lolliplot(endometrial.gr, Erbb2Features, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .7, jitter = "label")
+```
+
+##Oncoplot: co-occurrence of somatic variations (both IMPACT and NON-IMPACT data sets) 
+```{r EndometrialOncoplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#co-occurring somatic variants dataframe instantiation
+endometrialSomatics <- endometrialDataSet[c(match(c("Subject Identifier for the Study"), endometrialDataSet[,1]):dim(endometrialDataSet)[1]),]
+colnames(endometrialSomatics) <- endometrialSomatics[1,]
+endometrialSomatics <- endometrialSomatics[-c(1), c(2:7)]
+
+#Nov3: replacing the cfIMPACT string of the PUMA_ID column by NA
+endometrialSomatics[endometrialSomatics == "cfIMPACT"] <- NA
+#Nov3: filling out blank cells.
+endometrialSomatics  <- endometrialSomatics  %>% fill(PUMA_ID, Gene)
+endometrialSomatics$Subject.Identifier.for.the.Study <- gsub("\\d+-\\d+\\-", "", endometrialSomatics$PUMA_ID)
+#IMPACT data
+endometrialSomaticsImpact <- endometrialSomatics[(endometrialSomatics$Gene != "not done"),]
+#subsetting
+endometrialSomaticsImpact <- endometrialSomaticsImpact[,c(7,2,3)]
+#filtering out duplication rows
+endometrialSomaticsImpact <- unique(endometrialSomaticsImpact)
+
+#filtering it out rows where missing values
+endometrialSomaticsImpact <- na.omit(endometrialSomaticsImpact)
+
+#assigning variants to their respective type
+endometrialSomaticsImpact$Alteration <- variantTypeCall(endometrialSomaticsImpact$Alteration)
+
+#concatenate variations' types whenever occuring in a given gene for a given subject
+endometrialSomaticsImpact <- endometrialSomaticsImpact %>% group_by(Subject.Identifier.for.the.Study, Gene) %>% do(Alteration = paste(.$Alteration, collapse = '')) %>% ungroup() %>% mutate(Alteration = unlist(Alteration))
+mat <- as.data.frame(spread(endometrialSomaticsImpact, Subject.Identifier.for.the.Study, Alteration))
+row.names(mat) <- mat$Gene
+mat <- mat[,-1]
+
+#Non IMPACT data
+endometrialSomaticsNonImpact <- endometrialSomatics[(endometrialSomatics$Gene == "not done"),]
+endometrialSomaticsNonImpact <- endometrialSomaticsNonImpact[,c(7,5,6)]
+endometrialSomaticsNonImpact <- unique(endometrialSomaticsNonImpact)
+endometrialSomaticsNonImpact$Subject.Identifier.for.the.Study <- as.character(paste(endometrialSomaticsNonImpact$Subject.Identifier.for.the.Study, "*", sep = ""))
+endometrialSomaticsNonImpact <- na.omit(endometrialSomaticsNonImpact)
+
+#assigning variants to their respective type
+endometrialSomaticsNonImpact$Alteration.1 <- variantTypeCall(endometrialSomaticsNonImpact$Alteration.1)
+
+endometrialSomaticsNonImpact <- endometrialSomaticsNonImpact %>% group_by(Subject.Identifier.for.the.Study, Gene.1) %>% do(Alteration.1 = paste(.$Alteration.1, collapse = '')) %>% ungroup() %>% mutate(Alteration.1 = unlist(Alteration.1))
+
+#creating the mutations matrix for oncoprint
+mat2 <- as.data.frame(spread(endometrialSomaticsNonImpact, Subject.Identifier.for.the.Study, Alteration.1))
+mat2 <- subset(mat2, select = colnames(mat2) != "NA*")
+row.names(mat2) <- mat2$Gene.1
+mat2 <- mat2[,-1]
+
+mat <- merge(mat, mat2, by = "row.names", all = T)
+row.names(mat) <- mat$Row.names
+mat <- mat[,-1]
+
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), column_title = "Oncoplot for endometrial tumor", heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE)
+```
+
+##Waterfall and swim plots with oncoplot
+```{r endometrialyWF, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.align='left', fig.height= 4, fig.width= 4.8}
+#Waterfalls
+endometrialWF <- endometrial[,c(1, 12, 13, 17)]
+
+#selecting records for which there are IMPACT genotype data
+endometrialWF <- endometrialWF[(endometrialWF$Subject.Identifier.for.the.Study %in% intersect(endometrialWF$Subject.Identifier.for.the.Study, gsub("\\*", "", colnames(mat)))),]
+
+endometrialWF <- endometrialWF[complete.cases(endometrialWF$Percentage.Change.of.Tumor.Measurement),]
+endometrialWF <- endometrialWF[order(-endometrialWF$Percentage.Change.of.Tumor.Measurement),]
+
+##endometrialWF$Subject.Identifier.for.the.Study <- as.character(endometrialWF$Subject.Identifier.for.the.Study)
+
+endometrialWF$Best.Overall.Response <- factor(endometrialWF$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "NA"))
+
+g1 <- ggplot(endometrialWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-100, 100) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 5), legend.title = element_text(size = 7), legend.position = "top", plot.margin = unit(c(0,0,0,1.6), "cm")) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+g2 <- ggplot(endometrialWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = Best.Overall.Response)) +  geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(), axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6)) + guides(fill=FALSE) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+plot_grid(g1, g2, nrow = 2, align = "v")
+```
+
+```{r endometriallOncoplot2, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width= 6.9, fig.height = 6.0, fig.align = 'center'}
+#given the occurrences of missing data for the %change of tumor measurement variable, subset out the mat matrix for the Subject.Identifier where such missing data.
+##d1 <- setdiff(gsub("\\*", "", colnames(mat)), endometrialWF$Subject.Identifier.for.the.Study)
+##mat2 <- mat[, !colnames(mat) %in% grep(paste(d1, collapse = "|"), colnames(mat), value = T)]
+#creating a df for the purpose of reordering the mat object passed to the Oncoprint function
+df1 <- endometrialWF[,c(1,4)]
+df2 <- as.data.frame(colnames(mat))
+colnames(df2) <- "subjid"
+df2$Subject.Identifier.for.the.Study <- gsub("\\*", "", df2$subjid)
+df3 <- merge(df1, df2, by = "Subject.Identifier.for.the.Study", sort = F)
+
+mat <- mat[c(as.character(df3$subjid))]
+mat <- mat[rowSums(is.na(mat)) < dim(mat)[2],]
+
+oncoPrint(mat[c(as.character(df3$subjid))], get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE, column_order = NULL)
+```
+
+  
+<hr />  
+#Gastroesophageal  
+##Distributions of ErBb2 somatic variants w.r.t. clinical endpoints.
+```{r gastroesophageal, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#reading enrolment data set
+gastroesophagealDataSet <- readWorksheet(SummitBioMarker1215, sheet = "Gastroesophageal")
+#instantiate a subset dataframe for the lolliplot: loop through each row of the DataSet dataframe until the 1st row where there is no value, indicating the end of input
+gastroesophageal <- gastroesophagealDataSet[c(1:min(which(sapply(1:dim(gastroesophagealDataSet)[1], function(i) length(unique(as.character(gastroesophagealDataSet[c(i),]))) < 3) == TRUE)) -1),]
+
+#tabular views
+kable(t(as.matrix(table(gastroesophageal$Mutation.code))), caption = "ErBb2 somatic variants occurences")
+kable(table(gastroesophageal$Mutation.code, gastroesophageal$Primary.Cell.Type
+), caption = "ErbB2 mutation by Primary Cell Type")
+kable(table(gastroesophageal$Mutation.code, gastroesophageal$Objective.Response.at.Week.8), caption = "ErbB2 mutation by Objective Response at Week 8")
+
+#~Best overall response
+gastroesophageal$Best.Overall.Response[is.na(gastroesophageal$Best.Overall.Response)] <- "ND"
+#keep first 2 characters for the Best.Overall.Response's attribute value
+gastroesophageal$Best.Overall.Response <- as.factor(str_sub(gastroesophageal$Best.Overall.Response, 1, 2))
+#setting values to the Best.Overall.Response attribute
+gastroesophageal$Best.Overall.Response <- factor(gastroesophageal$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "ND"), ordered = TRUE)
+BestOverallResPerVar <-  as.data.frame.matrix(table(gastroesophageal$Mutation.code, gastroesophageal$Best.Overall.Response))
+datatable(BestOverallResPerVar, caption = "ErbB2 mutation by Best Overall Response")
+
+ClinicalBenefitPerVar <- as.data.frame.matrix(table(gastroesophageal$Mutation.code, gastroesophageal$Clinical.Benefit))
+datatable(ClinicalBenefitPerVar, caption = "ErbB2 mutations by Clinical Benefit Status")
+
+#gastroesophageal$Clinical.Benefit <- revalue(gastroesophageal$Clinical.Benefit, c("pending"="N/A"))
+
+gastroesophageal$Clinical.Benefit <- factor(gastroesophageal$Clinical.Benefit, levels = c("YES", "NO", "N/A"), ordered = TRUE)
+```
+<hr /> 
+
+##Lolliplot: Annotated ErBb2 somatic variants
+```{r gastroesophagealSNV, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+# adding one variable, i.e. the somatic variant coordinate w.r.t. ErbB2 aa
+# sequence
+gastroesophageal$ErBb2SomaticVarCoord <- as.numeric(str_extract(gastroesophageal$Mutation.code, "\\d+"))
+# adding two additional variables: the wild type aa and the substituted aa
+gastroesophageal$ErBb2WildTypeAA <- str_sub(gastroesophageal$Mutation.code, 1, 1)
+gastroesophageal$ErBb2SubsAA <- gsub("^\\w{1}\\d+", "", gastroesophageal$Mutation.code, perl = T)
+
+# reordering the dataframe according to the aa coordinate
+gastroesophageal <- gastroesophageal[order(gastroesophageal$ErBb2SomaticVarCoord), ]
+
+#creating the data structure for the GRanges() GenomicRanges package function
+gastroesophagealDf1 <- data.frame(gastroesophageal$ErBb2SomaticVarCoord, paste0(gastroesophageal$ErBb2WildTypeAA, gastroesophageal$ErBb2SomaticVarCoord), gastroesophageal$ErBb2SubsAA, gastroesophageal$Best.Overall.Response)
+#the gastroesophagealDf1 df Erbb2Features 4 columns, the coordinates where the variations map, the WT aa with the coordinate, the variant AA and the clinical response.
+colnames(gastroesophagealDf1) <- c("coord", "WTaaCoord", "Var", "Response")
+#creating a 2nd df in order to concatenate the substituions mapping to the same coordinate
+gastroesophagealDf2 <- as.data.frame(unique(gastroesophagealDf1[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+gastroesophagealDf2$SNV <- paste0(gastroesophagealDf2$WTaaCoord, gastroesophagealDf2$Varalleles)
+#adding it fo the initial gastroesophagealDf1 df
+gastroesophagealDf1 <- merge(gastroesophagealDf1, gastroesophagealDf2[,-c(2,3)], by = "WTaaCoord")
+#adding one attribute: concatenation of the clinical response and the variant
+gastroesophagealDf1$VarRes <- paste0(gastroesophagealDf1$Response, gastroesophagealDf1$SNV)
+#set order for clinical response value to bottom CR, PR, SD, PD, ND
+gastroesophagealDf1$Response <- str_replace_all(str_c(gastroesophagealDf1$Response), c("CR" = "E-CR", "PR" = "D-PR", "SD" = "C-SD", "PD" = "B-PD", "ND" = "A-ND"))
+#order the df
+gastroesophagealDf1 <- gastroesophagealDf1[order(gastroesophagealDf1$coord, gastroesophagealDf1$Response),]
+
+##
+gastroesophagealDf3 <- gastroesophagealDf1
+##
+
+gastroesophagealDf1 <- unique(ddply(gastroesophagealDf1[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+gastroesophagealDf1 <- gastroesophagealDf1[order(gastroesophagealDf1$coord, gastroesophagealDf1$Response),]
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+gastroesophageal.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(gastroesophagealDf1)[1], function(i) rep(gastroesophagealDf1$coord[i], gastroesophagealDf1$score[i]))), width = 1, names = unlist(sapply(1:dim(gastroesophagealDf1)[1], function(i) rep(gastroesophagealDf1$SNV[i], gastroesophagealDf1$score[i])))))
+
+#adding the stack.factor attribute
+gastroesophageal.gr$stack.factor <- unlist(sapply(1:dim(gastroesophagealDf1)[1], function(i) paste0(gastroesophagealDf1$Response[i], "_", seq(1:gastroesophagealDf1$score[i]))))
+gastroesophageal.gr$value1 <- 100
+gastroesophageal.gr$value2 <- 100 - gastroesophageal.gr$value1
+#setting the Best Overall Response legend
+response <- c("ND", "PD", "SD", "PR", "CR")
+response.color.set <- as.list(as.data.frame(rbind(c("gray", "black", "yellow", "green", "red"), "#FFFFFFFF"), stringsAsFactors = FALSE))
+names(response.color.set) <- response
+gastroesophageal.gr$color <- response.color.set[gsub("_\\d*|\\w*-", "", gastroesophageal.gr$stack.factor)]
+legend <- list(labels = response, col = "gray80", fill = sapply(response.color.set, `[`, 1))
+
+gastroesophagealDf3 <- ddply(gastroesophagealDf3, .(WTaaCoord), mutate, idx = seq_along(coord))
+gastroesophagealDf3 <- gastroesophagealDf3[order(gastroesophagealDf3$coord, gastroesophagealDf3$Response),]
+gastroesophageal.gr$stack.factor <- as.character(gastroesophagealDf3$idx)
+
+#plotting
+lolliplot(gastroesophageal.gr, Erbb2Features, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .7)
+```
+
+##Oncoplot: co-occurrence of somatic variations (both IMPACT and NON-IMPACT data sets) 
+```{r gastroesophagealOncoplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#co-occurring somatic variants dataframe instantiation
+gastroesophagealSomatics <- gastroesophagealDataSet[c(match(c("Subject Identifier for the Study"), gastroesophagealDataSet[,1]):dim(gastroesophagealDataSet)[1]),]
+colnames(gastroesophagealSomatics) <- gastroesophagealSomatics[1,]
+gastroesophagealSomatics <- gastroesophagealSomatics[-c(1), c(2:7)]
+
+#Nov3: replacing the cfIMPACT string of the PUMA_ID column by NA
+gastroesophagealSomatics[gastroesophagealSomatics == "cfIMPACT"] <- NA
+#Nov3: filling out blank cells.
+gastroesophagealSomatics  <- gastroesophagealSomatics  %>% fill(PUMA_ID, Gene)
+gastroesophagealSomatics$Subject.Identifier.for.the.Study <- gsub("\\d+-\\d+\\-", "", gastroesophagealSomatics$PUMA_ID)
+#IMPACT data
+gastroesophagealSomaticsImpact <- gastroesophagealSomatics[(gastroesophagealSomatics$Gene != "not done"),]
+#subsetting
+gastroesophagealSomaticsImpact <- gastroesophagealSomaticsImpact[,c(7,2,3)]
+#filtering out duplication rows
+gastroesophagealSomaticsImpact <- unique(gastroesophagealSomaticsImpact)
+
+#filtering it out rows where missing values
+gastroesophagealSomaticsImpact <- na.omit(gastroesophagealSomaticsImpact)
+
+#assigning variants to their respective type
+gastroesophagealSomaticsImpact$Alteration <- variantTypeCall(gastroesophagealSomaticsImpact$Alteration)
+
+#concatenate variations' types whenever occuring in a given gene for a given subject
+gastroesophagealSomaticsImpact <- gastroesophagealSomaticsImpact %>% group_by(Subject.Identifier.for.the.Study, Gene) %>% do(Alteration = paste(.$Alteration, collapse = '')) %>% ungroup() %>% mutate(Alteration = unlist(Alteration))
+mat <- as.data.frame(spread(gastroesophagealSomaticsImpact, Subject.Identifier.for.the.Study, Alteration))
+row.names(mat) <- mat$Gene
+mat <- mat[,-1]
+
+#Non IMPACT data
+gastroesophagealSomaticsNonImpact <- gastroesophagealSomatics[(gastroesophagealSomatics$Gene == "not done"),]
+gastroesophagealSomaticsNonImpact <- gastroesophagealSomaticsNonImpact[,c(7,5,6)]
+gastroesophagealSomaticsNonImpact <- unique(gastroesophagealSomaticsNonImpact)
+gastroesophagealSomaticsNonImpact$Subject.Identifier.for.the.Study <- as.character(paste(gastroesophagealSomaticsNonImpact$Subject.Identifier.for.the.Study, "*", sep = ""))
+gastroesophagealSomaticsNonImpact <- na.omit(gastroesophagealSomaticsNonImpact)
+
+#assigning variants to their respective type
+gastroesophagealSomaticsNonImpact$Alteration.1 <- variantTypeCall(gastroesophagealSomaticsNonImpact$Alteration.1)
+
+gastroesophagealSomaticsNonImpact <- gastroesophagealSomaticsNonImpact %>% group_by(Subject.Identifier.for.the.Study, Gene.1) %>% do(Alteration.1 = paste(.$Alteration.1, collapse = '')) %>% ungroup() %>% mutate(Alteration.1 = unlist(Alteration.1))
+
+#creating the mutations matrix for oncoprint
+mat2 <- as.data.frame(spread(gastroesophagealSomaticsNonImpact, Subject.Identifier.for.the.Study, Alteration.1))
+mat2 <- subset(mat2, select = colnames(mat2) != "NA*")
+row.names(mat2) <- mat2$Gene.1
+mat2 <- mat2[,-1]
+mat <- merge(mat, mat2, by = "row.names", all = T)
+row.names(mat) <- mat$Row.names
+mat <- mat[,-1]
+
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), column_title = "Oncoplot for gastroesophageal tumor", heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE)
+```
+
+##Waterfall and swim plots with oncoplot
+```{r gastroesophagealWF, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.align ='left', fig.height = 4, fig.width = 5.2}
+#Waterfalls
+gastroesophagealWF <- gastroesophageal[,c(1, 12, 13, 17)]
+
+#selecting records for which there are IMPACT genotype data
+gastroesophagealWF <- gastroesophagealWF[(gastroesophagealWF$Subject.Identifier.for.the.Study %in% intersect(gastroesophagealWF$Subject.Identifier.for.the.Study, gsub("\\*", "", colnames(mat)))),]
+
+gastroesophagealWF <- gastroesophagealWF[complete.cases(gastroesophagealWF$Percentage.Change.of.Tumor.Measurement),]
+gastroesophagealWF <- gastroesophagealWF[order(-gastroesophagealWF$Percentage.Change.of.Tumor.Measurement),]
+
+##gastroesophagealWF$Subject.Identifier.for.the.Study <- as.character(gastroesophagealWF$Subject.Identifier.for.the.Study)
+
+gastroesophagealWF$Best.Overall.Response <- factor(gastroesophagealWF$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "NA"))
+
+g1 <- ggplot(gastroesophagealWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-100, 100) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 5), legend.title = element_text(size = 7), legend.position = "top", plot.margin = unit(c(0,0,0,1.6), "cm")) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+g2 <- ggplot(gastroesophagealWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = Best.Overall.Response)) +  geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(), axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6)) + guides(fill=FALSE) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+plot_grid(g1, g2, nrow = 2, align = "v")
+```
+
+```{r gastroesophageallOncoplot2, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width= 6.9, fig.height = 6.0, fig.align = 'center'}
+#given the occurrences of missing data for the %change of tumor measurement variable, subset out the mat matrix for the Subject.Identifier where such missing data.
+##d1 <- setdiff(gsub("\\*", "", colnames(mat)), gastroesophagealWF$Subject.Identifier.for.the.Study)
+##mat2 <- mat[, !colnames(mat) %in% grep(paste(d1, collapse = "|"), colnames(mat), value = T)]
+#creating a df for the purpose of reordering the mat object passed to the Oncoprint function
+df1 <- gastroesophagealWF[,c(1,4)]
+df2 <- as.data.frame(colnames(mat))
+colnames(df2) <- "subjid"
+df2$Subject.Identifier.for.the.Study <- gsub("\\*", "", df2$subjid)
+df3 <- merge(df1, df2, by = "Subject.Identifier.for.the.Study", sort = F)
+
+mat <- mat[c(as.character(df3$subjid))]
+mat <- mat[rowSums(is.na(mat)) < dim(mat)[2],]
+
+oncoPrint(mat[c(as.character(df3$subjid))], get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE, column_order = NULL)
+```
+
+<hr /><hr />
+
+#Lung  
+##Distributions of ErBb2 somatic variants w.r.t. clinical endpoints.
+```{r lung, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#reading enrolment data set
+lungDataSet <- readWorksheet(SummitBioMarker1215, sheet = "Lung")
+#instantiate a subset dataframe for the lolliplot: loop through each row of the DataSet dataframe until the 1st row where there is no value, indicating the end of input
+lung <- lungDataSet[c(1:min(which(sapply(1:dim(lungDataSet)[1], function(i) length(unique(as.character(lungDataSet[c(i),]))) < 3) == TRUE)) -1),]
+
+#tabular views
+kable(t(as.matrix(table(lung$Mutation.code))), caption = "ErBb2 somatic variants occurences")
+kable(table(lung$Mutation.code, lung$Primary.Cell.Type
+), caption = "ErbB2 mutation by Primary Cell Type")
+kable(table(lung$Mutation.code, lung$Objective.Response.at.Week.8), caption = "ErbB2 mutation by Objective Response at Week 8")
+
+#~Best overall response
+lung$Best.Overall.Response[is.na(lung$Best.Overall.Response)] <- "ND"
+#keep first 2 characters for the Best.Overall.Response's attribute value
+lung$Best.Overall.Response <- as.factor(str_sub(lung$Best.Overall.Response, 1, 2))
+#setting values to the Best.Overall.Response attribute
+lung$Best.Overall.Response <- factor(lung$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "ND"), ordered = TRUE)
+BestOverallResPerVar <-  as.data.frame.matrix(table(lung$Mutation.code, lung$Best.Overall.Response))
+datatable(BestOverallResPerVar, caption = "ErbB2 mutation by Best Overall Response")
+
+ClinicalBenefitPerVar <- as.data.frame.matrix(table(lung$Mutation.code, lung$Clinical.Benefit))
+datatable(ClinicalBenefitPerVar, caption = "ErbB2 mutations by Clinical Benefit Status")
+
+#lung$Clinical.Benefit <- revalue(lung$Clinical.Benefit, c("pending"="N/A"))
+
+#assessing the potential contribution of ErbB2 somatic variant on Best Overall Response
+##chisq.test(table(na.omit(lung$Clinical.Benefit, lung$Mutation.code)))
+```
+<hr /> 
+
+##Lolliplot: Annotated ErBb2 somatic variants
+```{r lungSNV, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+# adding one variable, i.e. the somatic variant coordinate w.r.t. ErbB2 aa
+# sequence
+lung$ErBb2SomaticVarCoord <- as.numeric(str_extract(lung$Mutation.code, "\\d+"))
+# adding two additional variables: the wild type aa and the substituted aa
+lung$ErBb2WildTypeAA <- str_sub(lung$Mutation.code, 1, 1)
+lung$ErBb2SubsAA <- gsub("^\\w{1}\\d+", "", lung$Mutation.code, perl = T)
+
+# reordering the dataframe according to the aa coordinate
+lung <- lung[order(lung$ErBb2SomaticVarCoord), ]
+
+# to show the 2nd variant
+lung[4, 18] <- 259
+
+#creating the data structure for the GRanges() GenomicRanges package function
+lungDf1 <- data.frame(lung$ErBb2SomaticVarCoord, paste0(lung$ErBb2WildTypeAA, lung$ErBb2SomaticVarCoord), lung$ErBb2SubsAA, lung$Best.Overall.Response)
+#the lungDf1 df Erbb2Features 4 columns, the coordinates where the variations map, the WT aa with the coordinate, the variant AA and the clinical response.
+colnames(lungDf1) <- c("coord", "WTaaCoord", "Var", "Response")
+#creating a 2nd df in order to concatenate the substituions mapping to the same coordinate
+lungDf2 <- as.data.frame(unique(lungDf1[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+lungDf2$SNV <- paste0(lungDf2$WTaaCoord, lungDf2$Varalleles)
+#adding it fo the initial lungDf1 df
+lungDf1 <- merge(lungDf1, lungDf2[,-c(2,3)], by = "WTaaCoord")
+#adding one attribute: concatenation of the clinical response and the variant
+lungDf1$VarRes <- paste0(lungDf1$Response, lungDf1$SNV)
+#set order for clinical response value to bottom CR, PR, SD, PD, ND
+lungDf1$Response <- str_replace_all(str_c(lungDf1$Response), c("CR" = "E-CR", "PR" = "D-PR", "SD" = "C-SD", "PD" = "B-PD", "ND" = "A-ND"))
+#order the df
+lungDf1 <- lungDf1[order(lungDf1$coord, lungDf1$Response),]
+
+##
+lungDf3 <- lungDf1
+##
+
+lungDf1 <- unique(ddply(lungDf1[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+lungDf1 <- lungDf1[order(lungDf1$coord, lungDf1$Response),]
+
+lungDf1[4, 4] <- "S310F and F258L"
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+lung.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(lungDf1)[1], function(i) rep(lungDf1$coord[i], lungDf1$score[i]))), width = 1, names = unlist(sapply(1:dim(lungDf1)[1], function(i) rep(lungDf1$SNV[i], lungDf1$score[i])))))
+
+#adding the stack.factor attribute
+lung.gr$stack.factor <- unlist(sapply(1:dim(lungDf1)[1], function(i) paste0(lungDf1$Response[i], "_", seq(1:lungDf1$score[i]))))
+lung.gr$value1 <- 100
+lung.gr$value2 <- 100 - lung.gr$value1
+
+lung.gr$color <- response.color.set[gsub("_\\d*|\\w*-", "", lung.gr$stack.factor)]
+legend <- list(labels = response, col = "gray80", fill = sapply(response.color.set, `[`, 1))
+
+lungDf3 <- ddply(lungDf3, .(WTaaCoord), mutate, idx = seq_along(coord))
+lungDf3 <- lungDf3[order(lungDf3$coord, lungDf3$Response),]
+lung.gr$stack.factor <- as.character(lungDf3$idx)
+
+#lungDf3$SNPsideID <- c(rep("top", 17), rep("bottom", 5), rep("top", 5))
+
+#lung.gr$SNPsideID <- lungDf3$SNPsideID
+
+#plotting
+lolliplot(lung.gr, Erbb2Features, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .7, jitter = "label")
+```
+
+##Oncoplot: co-occurrence of somatic variations (both IMPACT and NON-IMPACT data sets) 
+```{r LungOncoplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 7, fig.height = 8}
+#co-occurring somatic variants dataframe instantiation
+LungSomatics <- lungDataSet[c(match(c("Subject Identifier for the Study"), lungDataSet[,1]):dim(lungDataSet)[1]),]
+colnames(LungSomatics) <- LungSomatics[1,]
+LungSomatics <- LungSomatics[-c(1), c(2:7)]
+
+#Nov3: replacing the cfIMPACT string of the PUMA_ID column by NA
+LungSomatics[LungSomatics == "cfIMPACT"] <- NA
+#Nov3: filling out blank cells.
+LungSomatics  <- LungSomatics  %>% fill(PUMA_ID, Gene)
+LungSomatics$Subject.Identifier.for.the.Study <- gsub("\\d+-\\d+\\-", "", LungSomatics$PUMA_ID)
+#IMPACT data
+LungSomaticsImpact <- LungSomatics[(LungSomatics$Gene != "not done"),]
+#subsetting
+LungSomaticsImpact <- LungSomaticsImpact[,c(7,2,3)]
+#filtering out duplication rows
+LungSomaticsImpact <- unique(LungSomaticsImpact)
+
+#filtering it out rows where missing values
+LungSomaticsImpact <- na.omit(LungSomaticsImpact)
+
+#assigning variants to their respective type
+LungSomaticsImpact$Alteration <- variantTypeCall(LungSomaticsImpact$Alteration)
+
+#concatenate variations' types whenever occuring in a given gene for a given subject
+LungSomaticsImpact <- LungSomaticsImpact %>% group_by(Subject.Identifier.for.the.Study, Gene) %>% do(Alteration = paste(.$Alteration, collapse = '')) %>% ungroup() %>% mutate(Alteration = unlist(Alteration))
+mat <- as.data.frame(spread(LungSomaticsImpact, Subject.Identifier.for.the.Study, Alteration))
+row.names(mat) <- mat$Gene
+mat <- mat[,-1]
+
+#Non IMPACT data
+LungSomaticsNonImpact <- LungSomatics[(LungSomatics$Gene == "not done"),]
+LungSomaticsNonImpact <- LungSomaticsNonImpact[,c(7,5,6)]
+LungSomaticsNonImpact <- unique(LungSomaticsNonImpact)
+LungSomaticsNonImpact$Subject.Identifier.for.the.Study <- as.character(paste(LungSomaticsNonImpact$Subject.Identifier.for.the.Study, "*", sep = ""))
+LungSomaticsNonImpact <- na.omit(LungSomaticsNonImpact)
+
+#assigning variants to their respective type
+LungSomaticsNonImpact$Alteration.1 <- variantTypeCall(LungSomaticsNonImpact$Alteration.1)
+
+LungSomaticsNonImpact <- LungSomaticsNonImpact %>% group_by(Subject.Identifier.for.the.Study, Gene.1) %>% do(Alteration.1 = paste(.$Alteration.1, collapse = '')) %>% ungroup() %>% mutate(Alteration.1 = unlist(Alteration.1))
+
+#creating the mutations matrix for oncoprint
+mat2 <- as.data.frame(spread(LungSomaticsNonImpact, Subject.Identifier.for.the.Study, Alteration.1))
+mat2 <- subset(mat2, select = colnames(mat2) != "NA*")
+row.names(mat2) <- mat2$Gene.1
+mat2 <- mat2[,-1]
+
+mat <- merge(mat, mat2, by = "row.names", all = T)
+row.names(mat) <- mat$Row.names
+mat <- mat[,-1]
+
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), column_names_gp = gpar(fontsize = 10), column_title = "Oncoplot for Lung tumor", heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE)
+```
+  
+##Waterfall and swim plots with oncoplot  
+```{r LungWF, echo = TRUE, message = FALSE, warning = FALSE, tidy = TRUE, fig.align = 'left', fig.height = 4, fig.width = 5.2}
+
+LungWF <- lung[-4, c(1, 12, 13, 17)]
+
+LungWF1 <- LungWF[complete.cases(LungWF$Percentage.Change.of.Tumor.Measurement),]
+LungWF1$Percentage.Change.of.Tumor.Measurement <- as.numeric(as.character(LungWF1$Percentage.Change.of.Tumor.Measurement))
+LungWF1$Progression.Free.Survival.Time..Months. <- as.numeric(as.character(LungWF1$Progression.Free.Survival.Time..Months.))
+LungWF1 <- LungWF1[order(-LungWF1$Percentage.Change.of.Tumor.Measurement),]
+
+LungWF1$Subject.Identifier.for.the.Study <- as.character(LungWF1$Subject.Identifier.for.the.Study)
+
+LungWF2 <- rbind(LungWF1, LungWF[is.na(LungWF$Percentage.Change.of.Tumor.Measurement),])
+LungWF2$Percentage.Change.of.Tumor.Measurement <- as.numeric(as.character(LungWF2$Percentage.Change.of.Tumor.Measurement))
+
+LungWF2$Subject.Identifier.for.the.Study <- as.character(LungWF2$Subject.Identifier.for.the.Study)
+
+g1 <- ggplot(LungWF2, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-100, 100) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 6), legend.title = element_text(size = 8), plot.margin = unit(c(0,0,0,1.6), "cm"), legend.position = "top") + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+g2 <- ggplot(LungWF2, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = Best.Overall.Response)) + geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(),  axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.position = "bottom")  + guides(fill=FALSE) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+plot_grid(g1, g2, nrow = 2, align = "v")
+
+```
+  
+```{r LunglOncoplot2, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 7.3, fig.height = 6.9, fig.align = "center"}
+LungWF2 <- LungWF2[order(-LungWF2$Percentage.Change.of.Tumor.Measurement, LungWF2$Subject.Identifier.for.the.Study),]
+
+df1 <- LungWF2[,c(1,4)]
+df2<- as.data.frame(colnames(mat))
+colnames(df2) <- "subjid"
+df2$Subject.Identifier.for.the.Study <- gsub("\\*", "", df2$subjid)
+df3 <- merge(df1, df2, by = "Subject.Identifier.for.the.Study", sort = F)
+
+mat <- mat[c(as.character(df3$subjid))]
+mat <- mat[rowSums(is.na(mat)) < dim(mat)[2], ]
+
+#removing redundant 1200 record
+mat <- mat[,!(colnames(mat) == "1200.1")]
+
+#mat <- mat[rowSums(is.na(mat)) < dim(mat)[2],]
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), column_names_gp = gpar(fontsize = 9), heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE, column_order = NULL)
+```
+
+
+<hr /><hr />
+#Ovarian  
+##Distributions of ErBb2 somatic variants w.r.t. clinical endpoints.
+```{r ovarian, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#reading enrolment data set
+ovarianDataSet <- readWorksheet(SummitBioMarker1215, sheet = "Ovarian")
+#instantiate a subset dataframe for the lolliplot: loop through each row of the DataSet dataframe until the 1st row where there is no value, indicating the end of input
+ovarian <- ovarianDataSet[c(1:min(which(sapply(1:dim(ovarianDataSet)[1], function(i) length(unique(as.character(ovarianDataSet[c(i),]))) < 3) == TRUE)) -1),]
+
+#tabular views
+kable(t(as.matrix(table(ovarian$Mutation.code))), caption = "ErBb2 somatic variants occurences")
+kable(table(ovarian$Mutation.code, ovarian$Primary.Cell.Type
+), caption = "ErbB2 mutation by Primary Cell Type")
+kable(table(ovarian$Mutation.code, ovarian$Objective.Response.at.Week.8), caption = "ErbB2 mutation by Objective Response at Week 8")
+
+#~Best overall response
+ovarian$Best.Overall.Response[is.na(ovarian$Best.Overall.Response)] <- "ND"
+#keep first 2 characters for the Best.Overall.Response's attribute value
+ovarian$Best.Overall.Response <- as.factor(str_sub(ovarian$Best.Overall.Response, 1, 2))
+#setting values to the Best.Overall.Response attribute
+ovarian$Best.Overall.Response <- factor(ovarian$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "ND"), ordered = TRUE)
+BestOverallResPerVar <-  as.data.frame.matrix(table(ovarian$Mutation.code, ovarian$Best.Overall.Response))
+datatable(BestOverallResPerVar, caption = "ErbB2 mutation by Best Overall Response")
+
+ClinicalBenefitPerVar <- as.data.frame.matrix(table(ovarian$Mutation.code, ovarian$Clinical.Benefit))
+datatable(ClinicalBenefitPerVar, caption = "ErbB2 mutations by Clinical Benefit Status")
+
+ovarian$Clinical.Benefit <- revalue(ovarian$Clinical.Benefit, c("pending"="N/A"))
+
+ovarian$Clinical.Benefit <- factor(ovarian$Clinical.Benefit, levels = c("YES", "NO", "N/A"), ordered = TRUE)
+
+#assessing the potential contribution of ErbB2 somatic variant on Best Overall Response
+##chisq.test(table(na.omit(ovarian$Clinical.Benefit, ovarian$Mutation.code)))
+```
+<hr /> 
+
+##Lolliplot: Annotated ErBb2 somatic variants
+```{r ovarianSNV, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+# adding one variable, i.e. the somatic variant coordinate w.r.t. ErbB2 aa
+# sequence
+ovarian$ErBb2SomaticVarCoord <- as.numeric(str_extract(ovarian$Mutation.code, 
+    "\\d+"))
+# adding two additional variables: the wild type aa and the substituted aa
+ovarian$ErBb2WildTypeAA <- str_sub(ovarian$Mutation.code, 1, 1)
+ovarian$ErBb2SubsAA <- gsub("^\\w{1}\\d+", "", ovarian$Mutation.code, 
+    perl = T)
+
+# reordering the dataframe according to the aa coordinate
+ovarian <- ovarian[order(ovarian$ErBb2SomaticVarCoord), ]
+
+#creating the data structure for the GRanges() GenomicRanges package function
+ovarianDf1 <- data.frame(ovarian$ErBb2SomaticVarCoord, paste0(ovarian$ErBb2WildTypeAA, ovarian$ErBb2SomaticVarCoord), ovarian$ErBb2SubsAA, ovarian$Best.Overall.Response)
+#the ovarianDf1 df Erbb2Features 4 columns, the coordinates where the variations map, the WT aa with the coordinate, the variant AA and the clinical response.
+colnames(ovarianDf1) <- c("coord", "WTaaCoord", "Var", "Response")
+#creating a 2nd df in order to concatenate the substituions mapping to the same coordinate
+ovarianDf2 <- as.data.frame(unique(ovarianDf1[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+ovarianDf2$SNV <- paste0(ovarianDf2$WTaaCoord, ovarianDf2$Varalleles)
+#adding it fo the initial ovarianDf1 df
+ovarianDf1 <- merge(ovarianDf1, ovarianDf2[,-c(2,3)], by = "WTaaCoord")
+#adding one attribute: concatenation of the clinical response and the variant
+ovarianDf1$VarRes <- paste0(ovarianDf1$Response, ovarianDf1$SNV)
+ovarianDf1 <- unique(ddply(ovarianDf1[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+ovarianDf1 <- ovarianDf1[order(ovarianDf1$coord, ovarianDf1$VarRes),]
+#Order lolliplot from top to bottom CR, PR, SD, PD, ND
+ovarianDf1$Response <- str_replace_all(str_c(ovarianDf1$Response), c("CR" = "E-CR", "PR" = "D-PR", "SD" = "C-SD", "PD" = "B-PD", "NA" = "A-ND"))
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+ovarian.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(ovarianDf1)[1], function(i) rep(ovarianDf1$coord[i], ovarianDf1$score[i]))), width = 1, names = unlist(sapply(1:dim(ovarianDf1)[1], function(i) rep(ovarianDf1$SNV[i], ovarianDf1$score[i])))))
+
+#adding the stack.factor attribute
+ovarian.gr$stack.factor <- unlist(sapply(1:dim(ovarianDf1)[1], function(i) paste0(ovarianDf1$Response[i], "_", seq(1:ovarianDf1$score[i]))))
+ovarian.gr$value1 <- 100
+ovarian.gr$value2 <- 100 - ovarian.gr$value1
+
+ovarian.gr$color <- response.color.set[gsub("_\\d*|\\w*-", "", ovarian.gr$stack.factor)]
+legend <- list(labels = response, col = "gray80", fill = sapply(response.color.set, `[`, 1))
+
+ovarianDf1 <- ddply(ovarianDf1, .(WTaaCoord), mutate, id = seq_along(coord))
+ovarianDf1 <- ovarianDf1[order(ovarianDf1$coord),]
+ovarian.gr$stack.factor <- as.character(ovarianDf1$id)
+
+#plotting
+lolliplot(ovarian.gr, Erbb2Features, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .7)
+```
+
+
+##Oncoplot: co-occurrence of somatic variations (both IMPACT and NON-IMPACT data sets) 
+```{r ovarianOncoplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#co-occurring somatic variants dataframe instantiation
+ovarianSomatics <- ovarianDataSet[c(match(c("Subject Identifier for the Study"), ovarianDataSet[,1]):dim(ovarianDataSet)[1]),]
+colnames(ovarianSomatics) <- ovarianSomatics[1,]
+ovarianSomatics <- ovarianSomatics[-c(1), c(2:7)]
+
+#Nov3: replacing the cfIMPACT string of the PUMA_ID column by NA
+ovarianSomatics[ovarianSomatics == "cfIMPACT"] <- NA
+#Nov3: filling out blank cells.
+ovarianSomatics  <- ovarianSomatics  %>% fill(PUMA_ID, Gene)
+ovarianSomatics$Subject.Identifier.for.the.Study <- gsub("\\d+-\\d+\\-", "", ovarianSomatics$PUMA_ID)
+#IMPACT data
+ovarianSomaticsImpact <- ovarianSomatics[(ovarianSomatics$Gene != "not done"),]
+#subsetting
+ovarianSomaticsImpact <- ovarianSomaticsImpact[,c(7,2,3)]
+#filtering out duplication rows
+ovarianSomaticsImpact <- unique(ovarianSomaticsImpact)
+
+#filtering it out rows where missing values
+ovarianSomaticsImpact <- na.omit(ovarianSomaticsImpact)
+
+#assigning variants to their respective type
+ovarianSomaticsImpact$Alteration <- variantTypeCall(ovarianSomaticsImpact$Alteration)
+
+#concatenate variations' types whenever occuring in a given gene for a given subject
+ovarianSomaticsImpact <- ovarianSomaticsImpact %>% group_by(Subject.Identifier.for.the.Study, Gene) %>% do(Alteration = paste(.$Alteration, collapse = '')) %>% ungroup() %>% mutate(Alteration = unlist(Alteration))
+mat <- as.data.frame(spread(ovarianSomaticsImpact, Subject.Identifier.for.the.Study, Alteration))
+row.names(mat) <- mat$Gene
+mat <- mat[,-1]
+
+#Non IMPACT data
+ovarianSomaticsNonImpact <- ovarianSomatics[(ovarianSomatics$Gene == "not done"),]
+ovarianSomaticsNonImpact <- ovarianSomaticsNonImpact[,c(7,5,6)]
+ovarianSomaticsNonImpact <- unique(ovarianSomaticsNonImpact)
+ovarianSomaticsNonImpact$Subject.Identifier.for.the.Study <- as.character(paste(ovarianSomaticsNonImpact$Subject.Identifier.for.the.Study, "*", sep = ""))
+ovarianSomaticsNonImpact <- na.omit(ovarianSomaticsNonImpact)
+
+#assigning variants to their respective type
+ovarianSomaticsNonImpact$Alteration.1 <- variantTypeCall(ovarianSomaticsNonImpact$Alteration.1)
+
+ovarianSomaticsNonImpact <- ovarianSomaticsNonImpact %>% group_by(Subject.Identifier.for.the.Study, Gene.1) %>% do(Alteration.1 = paste(.$Alteration.1, collapse = '')) %>% ungroup() %>% mutate(Alteration.1 = unlist(Alteration.1))
+
+#creating the mutations matrix for oncoprint
+mat2 <- as.data.frame(spread(ovarianSomaticsNonImpact, Subject.Identifier.for.the.Study, Alteration.1))
+mat2 <- subset(mat2, select = colnames(mat2) != "NA*")
+row.names(mat2) <- mat2$Gene.1
+mat2 <- mat2[,-1]
+
+mat <- merge(mat, mat2, by = "row.names", all = T)
+row.names(mat) <- mat$Row.names
+mat <- mat[,-1]
+
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), column_title = "Oncoplot for ovarian tumor", heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE)
+```
+
+##Waterfall and swim plots with oncoplot
+```{r ovarianyWF, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.align = 'left', fig.height = 4, fig.width = 5.0}
+#Waterfalls
+ovarianWF <- ovarian[,c(1, 12, 13, 17)]
+
+#selecting records for which there are IMPACT genotype data
+ovarianWF <- ovarianWF[(ovarianWF$Subject.Identifier.for.the.Study %in% intersect(ovarianWF$Subject.Identifier.for.the.Study, gsub("\\*", "", colnames(mat)))),]
+
+ovarianWF <- ovarianWF[complete.cases(ovarianWF$Percentage.Change.of.Tumor.Measurement),]
+ovarianWF <- ovarianWF[order(-ovarianWF$Percentage.Change.of.Tumor.Measurement),]
+
+##ovarianWF$Subject.Identifier.for.the.Study <- as.character(ovarianWF$Subject.Identifier.for.the.Study)
+
+ovarianWF$Best.Overall.Response <- factor(ovarianWF$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "NA"))
+
+g1 <- ggplot(ovarianWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-100, 100) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 5), legend.title = element_text(size = 7), legend.position = "top", plot.margin = unit(c(0,0,0,1.6), "cm")) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+g2 <- ggplot(ovarianWF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = Best.Overall.Response)) +  geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(), axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6)) + guides(fill=FALSE) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+plot_grid(g1, g2, nrow = 2, align = "v")
+```
+
+```{r ovarianlOncoplot2, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width= 6.9, fig.height = 6.0, fig.align = 'center'}
+#given the occurrences of missing data for the %change of tumor measurement variable, subset out the mat matrix for the Subject.Identifier where such missing data.
+##d1 <- setdiff(gsub("\\*", "", colnames(mat)), ovarianWF$Subject.Identifier.for.the.Study)
+##mat2 <- mat[, !colnames(mat) %in% grep(paste(d1, collapse = "|"), colnames(mat), value = T)]
+#creating a df for the purpose of reordering the mat object passed to the Oncoprint function
+df1 <- ovarianWF[,c(1,4)]
+df2 <- as.data.frame(colnames(mat))
+colnames(df2) <- "subjid"
+df2$Subject.Identifier.for.the.Study <- gsub("\\*", "", df2$subjid)
+df3 <- merge(df1, df2, by = "Subject.Identifier.for.the.Study", sort = F)
+
+mat <- mat[c(as.character(df3$subjid))]
+mat <- mat[rowSums(is.na(mat)) < dim(mat)[2],]
+
+oncoPrint(mat[c(as.character(df3$subjid))], get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE, column_order = NULL)
+```
+
+<hr /><hr />
+#HER2_NOS  
+##Distributions of ErBb2 somatic variants w.r.t. clinical endpoints.
+```{r HER2_NOS, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+#reading enrolment data set
+HER2_NOSDataSet <- readWorksheet(SummitBioMarker1215, sheet = "HER2_NOS")
+#instantiate a subset dataframe for the lolliplot: loop through each row of the DataSet dataframe until the 1st row where there is no value, indicating the end of input
+HER2_NOS <- HER2_NOSDataSet[c(1:min(which(sapply(1:dim(HER2_NOSDataSet)[1], function(i) length(unique(as.character(HER2_NOSDataSet[c(i),]))) < 3) == TRUE)) -1),]
+
+#tabular views
+kable(t(as.matrix(table(HER2_NOS$Mutation.code))), caption = "ErBb2 somatic variants occurences")
+##kable(table(HER2_NOS$Mutation.code, HER2_NOS$Primary.Cell.Type), caption = "ErbB2 mutation by Primary Cell Type")
+kable(table(HER2_NOS$Mutation.code, HER2_NOS$Objective.Response.at.Week.8), caption = "ErbB2 mutation by Objective Response at Week 8")
+
+#~Best overall response
+HER2_NOS$Best.Overall.Response[is.na(HER2_NOS$Best.Overall.Response)] <- "ND"
+#keep first 2 characters for the Best.Overall.Response's attribute value
+HER2_NOS$Best.Overall.Response <- as.factor(str_sub(HER2_NOS$Best.Overall.Response, 1, 2))
+#setting values to the Best.Overall.Response attribute
+HER2_NOS$Best.Overall.Response <- factor(HER2_NOS$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "ND"), ordered = TRUE)
+BestOverallResPerVar <-  as.data.frame.matrix(table(HER2_NOS$Mutation.code, HER2_NOS$Best.Overall.Response))
+datatable(BestOverallResPerVar, caption = "ErbB2 mutation by Best Overall Response")
+
+ClinicalBenefitPerVar <- as.data.frame.matrix(table(HER2_NOS$Mutation.code, HER2_NOS$Clinical.Benefit))
+datatable(ClinicalBenefitPerVar, caption = "ErbB2 mutations by Clinical Benefit Status")
+
+#HER2_NOS$Clinical.Benefit <- revalue(HER2_NOS$Clinical.Benefit, c("pending"="N/A"))
+
+```
+<hr /> 
+
+##Lolliplot: Annotated ErBb2 somatic variants
+```{r HER2_NOSSNV, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE}
+# adding one variable, i.e. the somatic variant coordinate w.r.t. ErbB2 aa
+# sequence
+HER2_NOS$ErBb2SomaticVarCoord <- as.numeric(str_extract(HER2_NOS$Mutation.code, 
+    "\\d+"))
+# adding two additional variables: the wild type aa and the substituted aa
+HER2_NOS$ErBb2WildTypeAA <- str_sub(HER2_NOS$Mutation.code, 1, 1)
+HER2_NOS$ErBb2SubsAA <- gsub("^\\w{1}\\d+", "", HER2_NOS$Mutation.code, perl = T)
+
+# reordering the dataframe according to the aa coordinate
+HER2_NOS <- HER2_NOS[order(HER2_NOS$ErBb2SomaticVarCoord), ]
+
+#creating the data structure for the GRanges() GenomicRanges package function
+HER2_NOSDf1 <- data.frame(HER2_NOS$ErBb2SomaticVarCoord, paste0(HER2_NOS$ErBb2WildTypeAA, HER2_NOS$ErBb2SomaticVarCoord), HER2_NOS$ErBb2SubsAA, HER2_NOS$Best.Overall.Response)
+#the HER2_NOSDf1 df Erbb2Features 4 columns, the coordinates where the variations map, the WT aa with the coordinate, the variant AA and the clinical response.
+colnames(HER2_NOSDf1) <- c("coord", "WTaaCoord", "Var", "Response")
+#creating a 2nd df in order to concatenate the substituions mapping to the same coordinate
+HER2_NOSDf2 <- as.data.frame(unique(HER2_NOSDf1[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+HER2_NOSDf2$SNV <- paste0(HER2_NOSDf2$WTaaCoord, HER2_NOSDf2$Varalleles)
+#adding it fo the initial HER2_NOSDf1 df
+HER2_NOSDf1 <- merge(HER2_NOSDf1, HER2_NOSDf2[,-c(2,3)], by = "WTaaCoord")
+#adding one attribute: concatenation of the clinical response and the variant
+HER2_NOSDf1$VarRes <- paste0(HER2_NOSDf1$Response, HER2_NOSDf1$SNV)
+#set order for clinical response value to bottom CR, PR, SD, PD, ND
+HER2_NOSDf1$Response <- str_replace_all(str_c(HER2_NOSDf1$Response), c("CR" = "E-CR", "PR" = "D-PR", "SD" = "C-SD", "PD" = "B-PD", "ND" = "A-ND"))
+#order the df
+HER2_NOSDf1 <- HER2_NOSDf1[order(HER2_NOSDf1$coord, HER2_NOSDf1$Response),]
+
+##
+HER2_NOSDf3 <- HER2_NOSDf1
+##
+
+HER2_NOSDf1 <- unique(ddply(HER2_NOSDf1[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+HER2_NOSDf1 <- HER2_NOSDf1[order(HER2_NOSDf1$coord, HER2_NOSDf1$Response),]
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+HER2_NOS.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(HER2_NOSDf1)[1], function(i) rep(HER2_NOSDf1$coord[i], HER2_NOSDf1$score[i]))), width = 1, names = unlist(sapply(1:dim(HER2_NOSDf1)[1], function(i) rep(HER2_NOSDf1$SNV[i], HER2_NOSDf1$score[i])))))
+
+#adding the stack.factor attribute
+HER2_NOS.gr$stack.factor <- unlist(sapply(1:dim(HER2_NOSDf1)[1], function(i) paste0(HER2_NOSDf1$Response[i], "_", seq(1:HER2_NOSDf1$score[i]))))
+HER2_NOS.gr$value1 <- 100
+HER2_NOS.gr$value2 <- 100 - HER2_NOS.gr$value1
+
+HER2_NOS.gr$color <- response.color.set[gsub("_\\d*|\\w*-", "", HER2_NOS.gr$stack.factor)]
+legend <- list(labels = response, col = "gray80", fill = sapply(response.color.set, `[`, 1))
+
+HER2_NOSDf3 <- ddply(HER2_NOSDf3, .(WTaaCoord), mutate, idx = seq_along(coord))
+HER2_NOSDf3 <- HER2_NOSDf3[order(HER2_NOSDf3$coord, HER2_NOSDf3$Response),]
+HER2_NOS.gr$stack.factor <- as.character(HER2_NOSDf3$idx)
+
+#plotting
+lolliplot(HER2_NOS.gr, Erbb2Features, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .7, jitter = "label")
+```
+
+
+##Oncoplot: co-occurrence of somatic variations (both IMPACT and NON-IMPACT data sets) 
+```{r HER2_NOS_Oncoplot, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 6.0, fig.height = 8.5}
+#co-occurring somatic variants dataframe instantiation
+HER2Somatics <- HER2_NOSDataSet[c(match(c("Subject Identifier for the Study"), HER2_NOSDataSet[,1]):dim(HER2_NOSDataSet)[1]),]
+colnames(HER2Somatics) <- HER2Somatics[1,]
+HER2Somatics <- HER2Somatics[-c(1), c(2:7)]
+
+#Nov3: replacing the cfIMPACT string of the PUMA_ID column by NA
+HER2Somatics[HER2Somatics == "cfIMPACT"] <- NA
+#Nov3: filling out blank cells.
+HER2Somatics  <- HER2Somatics  %>% fill(PUMA_ID, Gene)
+HER2Somatics$Subject.Identifier.for.the.Study <- gsub("\\d+-\\d+\\-", "", HER2Somatics$PUMA_ID)
+#IMPACT data
+HER2SomaticsImpact <- HER2Somatics[(HER2Somatics$Gene != "not done"),]
+#subsetting
+HER2SomaticsImpact <- HER2SomaticsImpact[,c(7,2,3)]
+#filtering out duplication rows
+HER2SomaticsImpact <- unique(HER2SomaticsImpact)
+
+#filtering it out rows where missing values
+HER2SomaticsImpact <- na.omit(HER2SomaticsImpact)
+
+#assigning variants to their respective type
+#HER2SomaticsImpact$Alteration <- variantTypeCall(HER2SomaticsImpact$Alteration)
+HER2SomaticsImpact$Alteration <- sub("[[:alnum:]]+\\*[[:alnum:]]*", "Nonsense;", HER2SomaticsImpact$Alteration)
+HER2SomaticsImpact$Alteration <- sub("[[:alnum:]]+_[[:alnum:]]+dup", "Indel;", HER2SomaticsImpact$Alteration)
+HER2SomaticsImpact$Alteration <- sub("AMP", "AMP;", HER2SomaticsImpact$Alteration, ignore.case = T)
+HER2SomaticsImpact$Alteration <- sub("DeepDel", "DeepDel;", HER2SomaticsImpact$Alteration)
+HER2SomaticsImpact$Alteration <- sub("promoter", "Promoter;", HER2SomaticsImpact$Alteration, ignore.case = T)
+HER2SomaticsImpact$Alteration <- sub("splice", "splice;", HER2SomaticsImpact$Alteration)
+HER2SomaticsImpact$Alteration <- sub("deletion", "Indel;", HER2SomaticsImpact$Alteration)
+HER2SomaticsImpact$Alteration <- sub("gain", "Gain;", HER2SomaticsImpact$Alteration, ignore.case = T)
+HER2SomaticsImpact$Alteration <- sub("[[:alnum:]]+_[[:alnum:]]+ins[[:alnum:]]*", "Indel;", HER2SomaticsImpact$Alteration)
+HER2SomaticsImpact$Alteration <- sub("[[:alnum:]]+_[[:alnum:]]del", "Indel;", HER2SomaticsImpact$Alteration)
+HER2SomaticsImpact$Alteration <- sub("\\w+\\d+\\w+", "Missense;", trimws(HER2SomaticsImpact$Alteration, which = c("both")))
+#concatenate variations' types whenever occuring in a given gene for a given subject
+HER2SomaticsImpact <- HER2SomaticsImpact %>% group_by(Subject.Identifier.for.the.Study, Gene) %>% do(Alteration = paste(.$Alteration, collapse = '')) %>% ungroup() %>% mutate(Alteration = unlist(Alteration))
+mat <- as.data.frame(spread(HER2SomaticsImpact, Subject.Identifier.for.the.Study, Alteration))
+row.names(mat) <- mat$Gene
+mat <- mat[,-1]
+
+#Non IMPACT data
+HER2SomaticsNonImpact <- HER2Somatics[(HER2Somatics$Gene == "not done"),]
+HER2SomaticsNonImpact <- HER2SomaticsNonImpact[,c(7,5,6)]
+HER2SomaticsNonImpact <- unique(HER2SomaticsNonImpact)
+HER2SomaticsNonImpact$Subject.Identifier.for.the.Study <- as.character(paste(HER2SomaticsNonImpact$Subject.Identifier.for.the.Study, "*", sep = ""))
+HER2SomaticsNonImpact <- na.omit(HER2SomaticsNonImpact)
+
+#assigning variants to their respective type
+HER2SomaticsNonImpact$Alteration.1 <- variantTypeCall(HER2SomaticsNonImpact$Alteration.1)
+
+HER2SomaticsNonImpact <- HER2SomaticsNonImpact %>% group_by(Subject.Identifier.for.the.Study, Gene.1) %>% do(Alteration.1 = paste(.$Alteration.1, collapse = '')) %>% ungroup() %>% mutate(Alteration.1 = unlist(Alteration.1))
+
+#creating the mutations matrix for oncoprint
+mat2 <- as.data.frame(spread(HER2SomaticsNonImpact, Subject.Identifier.for.the.Study, Alteration.1))
+mat2 <- subset(mat2, select = colnames(mat2) != "NA*")
+row.names(mat2) <- mat2$Gene.1
+mat2 <- mat2[,-1]
+
+mat <- merge(mat, mat2, by = "row.names", all = T)
+row.names(mat) <- mat$Row.names
+mat <- mat[,-1]
+
+oncoPrint(mat, get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), column_title = "Oncoplot for HER2 tumor", heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE)
+```
+
+##Waterfall and swim plots with oncoplot
+```{r HER2WF, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.align ='left', fig.height = 4, fig.width = 5.2}
+#Waterfalls
+HER2WF <- HER2_NOS[,c(1, 12, 13, 17)]
+
+#selecting records for which there are IMPACT genotype data
+HER2WF <- HER2WF[(HER2WF$Subject.Identifier.for.the.Study %in% intersect(HER2WF$Subject.Identifier.for.the.Study, gsub("\\*", "", colnames(mat)))),]
+
+HER2WF <- HER2WF[complete.cases(HER2WF$Percentage.Change.of.Tumor.Measurement),]
+HER2WF <- HER2WF[order(-HER2WF$Percentage.Change.of.Tumor.Measurement),]
+
+##HER2WF$Subject.Identifier.for.the.Study <- as.character(HER2WF$Subject.Identifier.for.the.Study)
+
+HER2WF$Best.Overall.Response <- factor(HER2WF$Best.Overall.Response, levels = c("CR", "PR", "SD", "PD", "NA"))
+
+g1 <- ggplot(HER2WF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Percentage.Change.of.Tumor.Measurement, fill = Best.Overall.Response)) + geom_col() + ylab("Change from baseline (%)") + theme_bw() +  ylim(-100, 100) + theme(axis.title.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6), legend.text = element_text(size = 5), legend.title = element_text(size = 7), legend.position = "top", plot.margin = unit(c(0,0,0,1.6), "cm")) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+g2 <- ggplot(HER2WF, aes(x = reorder(Subject.Identifier.for.the.Study, -Percentage.Change.of.Tumor.Measurement), y = Progression.Free.Survival.Time..Months., fill = Best.Overall.Response)) +  geom_col() + ylab("PFS (mo)") + theme_bw() + theme(axis.title.x = element_blank(), axis.text.x = element_text(size = 8, angle = 90, hjust = 1), axis.title.y = element_text(size = 9), axis.text.y = element_text(size = 6)) + guides(fill=FALSE) + scale_fill_manual(values = c("red", "green", "yellow", "black", "gray"), labels = c("CR", "PR", "SD", "PD", "ND"), drop = F)
+
+plot_grid(g1, g2, nrow = 2, align = "v")
+```
+
+```{r HER2Oncoplot2, echo = TRUE, message = FALSE, warning = FALSE,  tidy = TRUE, fig.width = 6.8, fig.height= 8, fig.align = "center"}
+#given the occurrences of missing data for the %change of tumor measurement variable, subset out the mat matrix for the Subject.Identifier where such missing data.
+##d1 <- setdiff(gsub("\\*", "", colnames(mat)), HER2WF$Subject.Identifier.for.the.Study)
+##mat2 <- mat[, !colnames(mat) %in% grep(paste(d1, collapse = "|"), colnames(mat), value = T)]
+#creating a df for the purpose of reordering the mat object passed to the Oncoprint function
+df1 <- HER2WF[,c(1,4)]
+df2 <- as.data.frame(colnames(mat))
+colnames(df2) <- "subjid"
+df2$Subject.Identifier.for.the.Study <- gsub("\\*", "", df2$subjid)
+df3 <- merge(df1, df2, by = "Subject.Identifier.for.the.Study", sort = F)
+
+mat <- mat[c(as.character(df3$subjid))]
+mat <- mat[rowSums(is.na(mat)) < dim(mat)[2],]
+
+oncoPrint(mat[c(as.character(df3$subjid))], get_type = function(x) strsplit(x, ";")[[1]], alter_fun = alter_fun, col = col, row_names_gp = gpar(fontsize = 6), pct_gp = gpar(fontsize = 6), heatmap_legend_param = list(title = "Alterations", at = c("Missense", "AMP", "Nonsense", "Indel", "splice", "Gain", "Promoter", "DeepDel", "rearrangement", "MissenseAmp"), labels = c("Missense", "Amplification", "Nonsense", "Indel", "splice", "Gain", "Promoter", "Deep Del", "rearrangement","Missense & Amp")), show_column_names = TRUE, column_order = NULL)
+```
+
+#Lollilplot of all tumor types irrespective of the clinical response value.  
+```{r alltumortypes, echo = TRUE, message = FALSE, warning = FALSE,  fig.height = 14, tidy = TRUE, fig.width = 10, fig.width = 10}
+bladderDfTumType <- data.frame(bladder$ErBb2SomaticVarCoord, paste0(bladder$ErBb2WildTypeAA, bladder$ErBb2SomaticVarCoord), bladder$ErBb2SubsAA)
+colnames(bladderDfTumType) <- c("coord", "WTaaCoord", "Var")
+bladderDfTumType$TumorType <- "Bladder"
+
+biliaryDfTumType <- data.frame(biliary$ErBb2SomaticVarCoord, paste0(biliary$ErBb2WildTypeAA, biliary$ErBb2SomaticVarCoord), biliary$ErBb2SubsAA)
+colnames(biliaryDfTumType) <- c("coord", "WTaaCoord", "Var")
+biliaryDfTumType$TumorType <- "Biliary"
+
+breastmonoTumType <- data.frame(Breast_mono$ErBb2SomaticVarCoord, paste0(Breast_mono$ErBb2WildTypeAA, Breast_mono$ErBb2SomaticVarCoord), Breast_mono$ErBb2SubsAA)
+colnames(breastmonoTumType) <- c("coord", "WTaaCoord", "Var")
+breastmonoTumType$TumorType <- "Breast"
+
+breastcomboTumType <- data.frame(Breast_combo$ErBb2SomaticVarCoord, paste0(Breast_combo$ErBb2WildTypeAA, Breast_combo$ErBb2SomaticVarCoord),Breast_combo$ErBb2SubsAA)
+colnames(breastcomboTumType) <- c("coord", "WTaaCoord", "Var")
+breastcomboTumType$TumorType <- "Breast"
+
+cervicalTumType <- data.frame(cervical$ErBb2SomaticVarCoord, paste0(cervical$ErBb2WildTypeAA, cervical$ErBb2SomaticVarCoord),cervical$ErBb2SubsAA)
+colnames(cervicalTumType) <- c("coord", "WTaaCoord", "Var")
+cervicalTumType$TumorType <- "cervical"
+
+colorectalTumType <- data.frame(colorectal$ErBb2SomaticVarCoord, paste0(colorectal$ErBb2WildTypeAA, colorectal$ErBb2SomaticVarCoord),colorectal$ErBb2SubsAA)
+colnames(colorectalTumType) <- c("coord", "WTaaCoord", "Var")
+colorectalTumType$TumorType <- "colorectal"
+
+endometrialTumType <- data.frame(endometrial$ErBb2SomaticVarCoord, paste0(endometrial$ErBb2WildTypeAA, endometrial$ErBb2SomaticVarCoord), endometrial$ErBb2SubsAA)
+colnames(endometrialTumType) <- c("coord", "WTaaCoord", "Var")
+endometrialTumType$TumorType <- "Endometrial"
+
+gastroesophagealTumType <- data.frame(gastroesophageal$ErBb2SomaticVarCoord, paste0(gastroesophageal$ErBb2WildTypeAA, gastroesophageal$ErBb2SomaticVarCoord), gastroesophageal$ErBb2SubsAA)
+colnames(gastroesophagealTumType) <- c("coord", "WTaaCoord", "Var")
+gastroesophagealTumType$TumorType <- "Gastroesophageal"
+
+lungTumType <- data.frame(lung$ErBb2SomaticVarCoord, paste0(lung$ErBb2WildTypeAA, lung$ErBb2SomaticVarCoord), lung$ErBb2SubsAA)
+colnames(lungTumType) <- c("coord", "WTaaCoord", "Var")
+lungTumType$TumorType <- "Lung"
+
+ovarianTumType <- data.frame(ovarian$ErBb2SomaticVarCoord, paste0(ovarian$ErBb2WildTypeAA, ovarian$ErBb2SomaticVarCoord), ovarian$ErBb2SubsAA)
+colnames(ovarianTumType) <- c("coord", "WTaaCoord", "Var")
+ovarianTumType$TumorType <- "Ovarian"
+
+HER2_NOSTumType <- data.frame(HER2_NOS$ErBb2SomaticVarCoord, paste0(HER2_NOS$ErBb2WildTypeAA, HER2_NOS$ErBb2SomaticVarCoord), HER2_NOS$ErBb2SubsAA)
+colnames(HER2_NOSTumType) <- c("coord", "WTaaCoord", "Var")
+HER2_NOSTumType$TumorType <- "HER2NOS"
+
+AllTumorTypes <- rbind(biliaryDfTumType, bladderDfTumType, breastmonoTumType, breastcomboTumType, cervicalTumType, colorectalTumType, endometrialTumType, gastroesophagealTumType, lungTumType, ovarianTumType, HER2_NOSTumType)
+
+AllTumorTypes <- AllTumorTypes[order(AllTumorTypes$coord), ]
+
+AllTumorTypes <- AllTumorTypes[(AllTumorTypes$coord != 259 & AllTumorTypes$coord != 779),]
+
+#creating a 2nd df in order to concatenate the substitutions mapping to the same coordinate
+AllTumorTypes2 <- as.data.frame(unique(AllTumorTypes[,-4]) %>% group_by(WTaaCoord, coord) %>% do(Varalleles = paste(.$Var, collapse = "/")) %>% ungroup() %>% mutate(Varalleles = unlist(Varalleles)))
+#adding one variable referred to as SNV which reads the WT aa, the coordinate and the substituted aa
+AllTumorTypes2$SNV <- paste0(AllTumorTypes2$WTaaCoord, AllTumorTypes2$Varalleles)
+
+AllTumorTypes <- merge(AllTumorTypes, AllTumorTypes2[,-c(2,3)], by = "WTaaCoord")
+
+#adding one attribute: concatenation of the tumor type and the variant
+AllTumorTypes$VarRes <- paste0(AllTumorTypes$TumorType, AllTumorTypes$SNV)
+
+AllTumorTypes <- AllTumorTypes[order(AllTumorTypes$coord, AllTumorTypes$TumorType),]
+
+#duplicated the AllTumorTypes Df object for later plotting on the kinase domain
+AllTumorTypes_2 <- AllTumorTypes
+
+AllTumorTypes3 <- AllTumorTypes
+
+AllTumorTypes <- unique(ddply(AllTumorTypes[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+AllTumorTypes <- AllTumorTypes[order(AllTumorTypes$coord, AllTumorTypes$TumorType),]
+
+#instantiating the GRanges object with the coordinates and names of somatic variations
+AllTumorTypes.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(AllTumorTypes)[1], function(i) rep(AllTumorTypes$coord[i], AllTumorTypes$score[i]))), width = 1, names = unlist(sapply(1:dim(AllTumorTypes)[1], function(i) rep(AllTumorTypes$SNV[i], AllTumorTypes$score[i])))))
+
+#adding the stack.factor attribute
+AllTumorTypes.gr$stack.factor <- unlist(sapply(1:dim(AllTumorTypes)[1], function(i) paste0(AllTumorTypes$TumorType[i], "_", seq(1:AllTumorTypes$score[i]))))
+
+AllTumorTypes.gr$value1 <- 100
+AllTumorTypes.gr$value2 <- 100 - AllTumorTypes.gr$value1
+
+tumor <- c("Biliary", "Bladder", "Breast", "cervical", "colorectal", "Endometrial", "Gastroesophageal", "Lung", "Ovarian", "HER2NOS")
+
+tumor.color.set <- as.list(as.data.frame(rbind(c("red", "blue", "yellow", "green", "azure", "darkorange", "cyan", "darkmagenta", "black", "bisque"), "#FFFFFFFF"), stringsAsFactors = FALSE))
+names(tumor.color.set) <- tumor
+
+AllTumorTypes.gr$color <- tumor.color.set[gsub("_\\d*|\\w*-", "", AllTumorTypes.gr$stack.factor)]
+legend <- list(labels = tumor, col = "gray80", fill = sapply(tumor.color.set, `[`, 1))
+
+
+AllTumorTypes3 <- ddply(AllTumorTypes3, .(WTaaCoord), mutate, idx = seq_along(coord))
+AllTumorTypes3 <- AllTumorTypes3[order(AllTumorTypes3$coord, AllTumorTypes3$TumorType),]
+
+
+AllTumorTypes3$idx <- str_replace_all(str_c(AllTumorTypes3$idx), c("42" = "ZP", "41" = "ZO", "40" = "ZN", "39" = "ZM", "38" ="ZL", "37" = "ZK", "36" = "ZJ", "35" = "ZI", "34" = "ZH", "33" = "ZG", "32" = "ZF", "31" = "ZE", "30" = "ZD", "29" = "ZC", "28" = "ZB", "27" = "ZA", "26" = "Z", "25" = "Y",  "24" = "X", "23" = "W", "22" = "V", "21" = "U", "20" = "T", "19" = "S", "18" = "R", "17" = "Q", "16" = "P", "15" = "O", "14" = "N", "13" = "M", "12" = "L", "11" = "K", "10" = "J","1" = "A", "2" = "B", "3" = "C", "4" = "D", "5" = "E", "6" = "F", "7" = "G", "8" = "H", "9" = "I"))
+
+AllTumorTypes.gr$stack.factor <- as.character(AllTumorTypes3$idx)
+
+
+#AllTumorTypes3$SNPsideID <- c(rep("top", 7), rep("bottom", 1), rep("top", 50), rep("bottom", 1), rep("top", 24), rep("bottom", 1), rep("top", 1), rep("bottom", 9), rep("top", 15), rep("bottom", 1), rep("top", 1), rep("bottom", 8), rep("top", 21), rep("bottom", 10), rep("top", 1), rep("bottom", 1), rep("top", 1), rep("bottom", 1), rep("top", 1), rep("bottom", 2), rep("top", 6), rep("bottom", 2),rep("top", 4), rep("bottom", 2), rep("top", 1))
+
+#AllTumorTypes.gr$SNPsideID <- AllTumorTypes3$SNPsideID
+
+#plotting
+lolliplot(AllTumorTypes.gr, Erbb2Features2, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .4)
+```
+
+
+#Lolliplot of all tumor types irrespective of the clinical response in the Erbb2 kinase domain
+```{r alltumortypesErbb2kinase, echo = TRUE, message = FALSE, warning = FALSE, fig.height = 10, tidy = TRUE}
+
+AllTumorTypes_2 <- AllTumorTypes_2[(AllTumorTypes_2$coord > 674 & AllTumorTypes_2$coord < 1000), ]
+AllTumorTypes_2$coord <- AllTumorTypes_2$coord - 674
+
+AllTumorTypes3_2 <- AllTumorTypes_2
+
+AllTumorTypes_2 <- unique(ddply(AllTumorTypes_2[,-c(3)], "VarRes", mutate, score = length(VarRes)))
+AllTumorTypes_2 <- AllTumorTypes_2[order(AllTumorTypes_2$coord, AllTumorTypes_2$TumorType),]
+
+# instantiating the GRanges object with the coordinates and names of somatic
+# variations
+AllTumorTypes2.gr <- GRanges("ERBB2", IRanges(unlist(sapply(1:dim(AllTumorTypes_2)[1], 
+    function(i) rep(AllTumorTypes_2$coord[i], AllTumorTypes_2$score[i]))), width = 1, 
+    names = unlist(sapply(1:dim(AllTumorTypes_2)[1], function(i) rep(AllTumorTypes_2$SNV[i], 
+        AllTumorTypes_2$score[i])))))
+
+#adding the stack.factor attribute
+AllTumorTypes2.gr$stack.factor <- unlist(sapply(1:dim(AllTumorTypes_2)[1], function(i) paste0(AllTumorTypes_2$TumorType[i], "_", seq(1:AllTumorTypes_2$score[i]))))
+
+AllTumorTypes2.gr$value1 <- 100
+AllTumorTypes2.gr$value2 <- 100 - AllTumorTypes2.gr$value1
+
+AllTumorTypes2.gr$color <- tumor.color.set[gsub("_\\d*|\\w*-", "", AllTumorTypes2.gr$stack.factor)]
+legend <- list(labels = tumor, col = "gray80", fill = sapply(tumor.color.set, `[`, 1))
+
+AllTumorTypes3_2 <- ddply(AllTumorTypes3_2, .(WTaaCoord), mutate, idx = seq_along(coord))
+AllTumorTypes3_2 <- AllTumorTypes3_2[order(AllTumorTypes3_2$coord, AllTumorTypes3_2$TumorType),]
+
+
+AllTumorTypes3_2$idx <- str_replace_all(str_c(AllTumorTypes3_2$idx), c("25" = "Y", "24" = "X", "23" = "W", "22" = "V", "21" = "U", "20" = "T", "19" = "S", "18" = "R", "17" = "Q", "16" = "P", "15" = "O", "14" = "N", "13" = "M", "12" = "L", "11" = "K", "10" = "J", "1" = "A", "2" = "B", "3" = "C", "4" = "D", "5" = "E", "6" = "F", "7" = "G", "8" = "H", "9" = "I"))
+
+AllTumorTypes2.gr$stack.factor <- as.character(AllTumorTypes3_2$idx)
+
+#plotting
+trackViewer::lolliplot(AllTumorTypes2.gr, Erbb2KinaseFeature, type = "pie.stack", legend = legend, dashline.col = "gray", cex = .6)
+```
+  
+
+#Citations  
+```{r citations}  
+sapply(c("XLConnect", "knitr", "ggplot2", "GenomicRanges", "rtracklayer", "trackViewer", "plyr", "dplyr", "DT", "stringr", "tidyr", "magrittr","ComplexHeatmap", "GetoptLong"), citation)
+```
+
+```{r CloseUp}
+sessionInfo()
+```
