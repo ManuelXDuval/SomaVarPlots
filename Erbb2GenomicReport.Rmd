@@ -24,7 +24,7 @@ version#: `r Sys.time()`
 
 ##Methods  
 -the report is created with the statistical computing and graphics R environment.  
--the R markdown script referred to as SUMMITBioMarkerGenomicReport.Rmd reads the set of Erbb2 genotype data as well as MSK-IMPACT and non MSK-IMPACT targeted genes' genotypes form the input SUMMITbiomarkerLogDataCut23-Jun-2017.xls excel formatted file.  
+-the R markdown script referred to as SUMMITBioMarkerGenomicReport.Rmd reads the set of Erbb2 genotype data as well as MSK-IMPACT and non MSK-IMPACT targeted genes' genotypes form an input xlsx excel formatted file.  
 -In addition to general purposes packages like dplyr and DT, the two main specific packages applied by the script are [trackViewer](https://bioconductor.org/packages/release/bioc/html/trackViewer.html) and [ComplexHeatmap](https://bioconductor.org/packages/release/bioc/html/ComplexHeatmap.html): these are used to generate lollipop plots and oncoplots respectively.  Detail information about the packages version are reported at the end of the document.  
 
 ##New (03/04/2018)
